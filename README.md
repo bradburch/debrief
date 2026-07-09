@@ -62,6 +62,16 @@ open Debrief.app
 binary) so macOS attaches the microphone and screen-recording permission prompts
 to *Debrief* instead of your terminal.
 
+> **Signing (do this once, before your first build):** create a self-signed
+> **Code Signing** certificate named `Debrief Local Signing` — Keychain Access →
+> *Certificate Assistant → Create a Certificate…* → Identity Type **Self Signed
+> Root**, Certificate Type **Code Signing**. `make-app.sh` signs the bundle with
+> it, giving Debrief a code identity that's stable across rebuilds. Without it the
+> script falls back to an **ad-hoc** signature whose identity changes every build,
+> so macOS keeps re-prompting for your Keychain password and drops the
+> Microphone/Screen-Recording grants on each rebuild. No trust step or admin
+> password is needed; override the name with `DEBRIEF_SIGN_IDENTITY` if you like.
+
 > **Toolchain note:** every `swift` command must run under the full Xcode
 > toolchain, because the Command Line Tools instance has no XCTest. Either run
 > `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` once, or
