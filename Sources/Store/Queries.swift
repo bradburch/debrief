@@ -44,6 +44,12 @@ extension AppDatabase {
         }
     }
 
+    public func updateCompanyName(id: Int64, name: String) throws {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE company SET name = ? WHERE id = ?", arguments: [name, id])
+        }
+    }
+
     public func insertSession(_ s: InterviewSession) throws -> InterviewSession {
         try dbWriter.write { db in var s = s; try s.insert(db); return s }
     }

@@ -12,6 +12,13 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(a.id, b.id)
     }
 
+    func testUpdateCompanyNameRenamesExistingCompany() throws {
+        let co = try db.fetchOrCreateCompany(named: "Unknown")
+        try db.updateCompanyName(id: co.id!, name: "Acme")
+        let renamed = try db.fetchOrCreateCompany(named: "Acme")
+        XCTAssertEqual(renamed.id, co.id)
+    }
+
     func testSessionRoundTripAndDetail() throws {
         let co = try db.fetchOrCreateCompany(named: "Acme")
         let s = try db.insertSession(InterviewSession(

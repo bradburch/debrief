@@ -31,7 +31,7 @@ struct SessionsView: View {
             .frame(minWidth: 260, maxWidth: 340)
 
             if let id = selectedId {
-                SessionDetailView(sessionId: id).id(id)
+                SessionDetailView(sessionId: id, onRenamed: reload).id(id)
             } else {
                 Text("Select a session").frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -55,7 +55,9 @@ struct SessionsView: View {
 struct SessionDetailView: View {
     @EnvironmentObject var env: AppEnvironment
     let sessionId: Int64
+    var onRenamed: (() -> Void)? = nil
     @State private var detail: SessionDetail?
+    @State private var companyName = ""
     @State private var scrollTarget: Double?
     @State private var regenerating = false
 
@@ -70,14 +72,34 @@ struct SessionDetailView: View {
                 ProgressView()
             }
         }
-        .onAppear { detail = try? env.db.sessionDetail(id: sessionId) }
+        .onAppear {
+            detail = try? env.db.sessionDetail(id: sessionId)
+            companyName = detail?.company.name ?? ""
+        }
+    }
+
+    private func commitRename(_ d: SessionDetail) {
+        let trimmed = companyName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let id = d.company.id, !trimmed.isEmpty, trimmed != d.company.name else {
+            companyName = d.company.name
+            return
+        }
+        try? env.db.updateCompanyName(id: id, name: trimmed)
+        detail = try? env.db.sessionDetail(id: sessionId)
+        onRenamed?()
     }
 
     @ViewBuilder
     private func debriefPane(_ d: SessionDetail) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("\(d.company.name) — \(d.session.roundType.displayName)").font(.title2).bold()
+                HStack(spacing: 4) {
+                    TextField("Title", text: $companyName)
+                        .textFieldStyle(.plain)
+                        .onSubmit { commitRename(d) }
+                    Text("— \(d.session.roundType.displayName)").foregroundStyle(.secondary)
+                }
+                .font(.title2).bold()
                 if let f = d.feedback {
                     if !d.tags.isEmpty {
                         HStack {
