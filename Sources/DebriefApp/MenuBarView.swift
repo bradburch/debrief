@@ -66,7 +66,16 @@ struct MenuBarView: View {
                     .lineLimit(4)
             }
             Divider()
-            Button("Open Debrief") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+            Button("Open Debrief") {
+                openWindow(id: "main")
+                // ponytail: openWindow() creates the NSWindow asynchronously; activating
+                // immediately races it and leaves the window unfocused (LSUIElement apps
+                // don't get key status for free). Defer a tick so the window exists first.
+                DispatchQueue.main.async {
+                    NSApp.activate(ignoringOtherApps: true)
+                    NSApp.windows.first { $0.identifier?.rawValue == "main" }?.makeKeyAndOrderFront(nil)
+                }
+            }
             Button("Quit") { NSApp.terminate(nil) }
         }
         .padding(12)
