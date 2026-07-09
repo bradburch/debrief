@@ -224,4 +224,15 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try db.scoresByDate(roundType: .technical).count, 2)
         XCTAssertTrue(try db.scoresByDate(roundType: .behavioral).isEmpty)
     }
+
+    func testCustomInstructionsDefaultsEmptyAndRoundTrips() throws {
+        let co = try db.fetchOrCreateCompany(named: "Acme")
+        let s = try db.insertSession(.init(id: nil, companyId: co.id!, roundType: .behavioral,
+                                           date: Date(), durationSeconds: 60, contextNotes: "",
+                                           coachingStatus: .pending))
+        XCTAssertEqual(try db.sessionDetail(id: s.id!)?.session.customInstructions, "")
+        try db.updateSessionCriteria(id: s.id!, "Grade harshly on system-design depth.")
+        XCTAssertEqual(try db.sessionDetail(id: s.id!)?.session.customInstructions,
+                       "Grade harshly on system-design depth.")
+    }
 }
