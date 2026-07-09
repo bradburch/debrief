@@ -62,6 +62,7 @@ struct SessionDetailView: View {
     @State private var scrollTarget: Double?
     @State private var regenerating = false
     @State private var criteria = ""
+    @State private var regenerateError: String?
 
     var body: some View {
         Group {
@@ -79,11 +80,20 @@ struct SessionDetailView: View {
             companyName = detail?.company.name ?? ""
             criteria = detail?.session.customInstructions ?? ""
         }
-        .onDisappear { if let detail { commitRename(detail); commitCriteria() } }
+        .onDisappear { if let detail { commitRename(detail) } }  // criteria persists live via .onChange
     }
 
     private func commitCriteria() {
         try? env.db.updateSessionCriteria(id: sessionId, criteria)
+    }
+
+    private func regenerateButtonTitle(hasFeedback: Bool) -> String {
+        switch (regenerating, hasFeedback) {
+        case (true, false): return "Generating…"
+        case (true, true): return "Regenerating…"
+        case (false, false): return "Generate debrief"
+        case (false, true): return "Regenerate"
+        }
     }
 
     private func commitRename(_ d: SessionDetail) {
@@ -126,16 +136,26 @@ struct SessionDetailView: View {
                         TextEditor(text: $criteria)
                             .frame(minHeight: 60, maxHeight: 140)
                             .font(.callout)
+                            .disabled(regenerating)  // don't let the text drift from what's being graded
+                            .onChange(of: criteria) { commitCriteria() }  // durable: survives quit without a click
+                        if let regenerateError {
+                            Text(regenerateError).font(.caption).foregroundStyle(.red)
+                        }
                         HStack {
                             Text("Paste a rubric or focus for this interview. Applied when you (re)generate the debrief.")
                                 .font(.caption).foregroundStyle(.secondary)
                             Spacer()
-                            Button(regenerating ? "Regenerating…" : (d.feedback == nil ? "Generate debrief" : "Regenerate")) {
+                            Button(regenerateButtonTitle(hasFeedback: d.feedback != nil)) {
                                 regenerating = true
+                                regenerateError = nil
                                 Task {
-                                    commitCriteria()  // persist before grading, single-sourced
-                                    try? await env.coaching.coach(sessionId: sessionId)
-                                    detail = try? env.db.sessionDetail(id: sessionId)
+                                    do {
+                                        try await env.coaching.coach(sessionId: sessionId)
+                                    } catch {
+                                        regenerateError = "Couldn’t generate debrief: \(error.localizedDescription)"
+                                    }
+                                    // Guard the reload: a failed read must not blank out the pane.
+                                    if let fresh = try? env.db.sessionDetail(id: sessionId) { detail = fresh }
                                     regenerating = false
                                 }
                             }.disabled(regenerating)
