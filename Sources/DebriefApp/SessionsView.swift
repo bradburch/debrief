@@ -133,7 +133,7 @@ struct SessionDetailView: View {
                             Button(regenerating ? "Regenerating…" : (d.feedback == nil ? "Generate debrief" : "Regenerate")) {
                                 regenerating = true
                                 Task {
-                                    try? env.db.updateSessionCriteria(id: sessionId, criteria)
+                                    commitCriteria()  // persist before grading, single-sourced
                                     try? await env.coaching.coach(sessionId: sessionId)
                                     detail = try? env.db.sessionDetail(id: sessionId)
                                     regenerating = false
