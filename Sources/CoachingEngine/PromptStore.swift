@@ -30,7 +30,8 @@ public struct PromptStore: Sendable {
     }
 
     public func assembleSystemPrompt(roundType: RoundType,
-                                     historyTags: [(tag: String, count: Int)]) throws -> String {
+                                     historyTags: [(tag: String, count: Int)],
+                                     customInstructions: String = "") throws -> String {
         let base = try String(contentsOf: directory.appendingPathComponent("base.md"), encoding: .utf8)
         let overlay = try String(contentsOf: directory.appendingPathComponent("\(roundType.rawValue).md"), encoding: .utf8)
         let history: String
@@ -40,6 +41,19 @@ public struct PromptStore: Sendable {
             let lines = historyTags.map { "- \($0.tag) (x\($0.count))" }.joined(separator: "\n")
             history = "## Prior session history\n\nRecurring weakness tags from this candidate's recent interviews:\n\(lines)"
         }
-        return [base, overlay, history].joined(separator: "\n\n")
+        var sections = [base, overlay, history]
+        let trimmed = customInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            sections.append("""
+            ## Criteria for THIS interview
+
+            These instructions were provided specifically for this interview. Where they conflict \
+            with the general rubric above, follow these. Otherwise the base dimensions, weakness-tag \
+            vocabulary, and output format above still fully apply.
+
+            \(trimmed)
+            """)
+        }
+        return sections.joined(separator: "\n\n")
     }
 }

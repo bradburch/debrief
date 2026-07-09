@@ -12,6 +12,16 @@ struct StubLLM: CoachingLLM {
     }
 }
 
+struct RequireMarkerLLM: CoachingLLM {
+    let marker: String
+    func generateCoaching(systemPrompt: String, userMessage: String) async throws -> CoachingResult {
+        guard systemPrompt.contains(marker) else { throw ClaudeError.emptyResponse }
+        return CoachingResult(proseDebrief: "ok",
+                              scores: ["answer_relevance": 3, "structure": 3, "conciseness": 3, "questions_asked": 3],
+                              weaknessTags: [], highlights: [], actionItems: [])
+    }
+}
+
 final class CoachingServiceTests: XCTestCase {
     var db: AppDatabase!
     var prompts: PromptStore!
@@ -72,6 +82,14 @@ final class CoachingServiceTests: XCTestCase {
         let service = CoachingService(db: db, prompts: prompts, llm: StubLLM(result: .success(goodResult())))
         let errors = await service.retryAllPending()
         XCTAssertTrue(errors.isEmpty)
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .complete)
+    }
+
+    func testCoachForwardsCustomInstructionsIntoSystemPrompt() async throws {
+        let id = try seedSession()
+        try db.updateSessionCriteria(id: id, "GRADE_MARKER_XYZ")
+        let service = CoachingService(db: db, prompts: prompts, llm: RequireMarkerLLM(marker: "GRADE_MARKER_XYZ"))
+        try await service.coach(sessionId: id)  // throws emptyResponse if the marker never reached the system prompt
         XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .complete)
     }
 }

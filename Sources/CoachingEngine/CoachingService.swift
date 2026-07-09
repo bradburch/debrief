@@ -18,7 +18,8 @@ public struct CoachingService: Sendable {
             }
             let history = try db.recentWeaknessTags(limitSessions: historyWindow)
             let system = try prompts.assembleSystemPrompt(roundType: detail.session.roundType,
-                                                          historyTags: history)
+                                                          historyTags: history,
+                                                          customInstructions: detail.session.customInstructions)
             let transcript = try db.transcriptText(sessionId: sessionId)
             let user = """
             Interview metadata:

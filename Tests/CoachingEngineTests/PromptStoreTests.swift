@@ -41,4 +41,24 @@ final class PromptStoreTests: XCTestCase {
         let prompt = try store.assembleSystemPrompt(roundType: .technical, historyTags: [])
         XCTAssertTrue(prompt.contains("No prior session history"))
     }
+
+    func testAssembleAppendsCustomInstructionsWithPrecedence() throws {
+        try store.ensureDefaults()
+        let prompt = try store.assembleSystemPrompt(
+            roundType: .behavioral, historyTags: [],
+            customInstructions: "Focus on staff-level scope.")
+        XCTAssertTrue(prompt.contains("Focus on staff-level scope."))
+        XCTAssertTrue(prompt.contains("Criteria for THIS interview"))
+        XCTAssertTrue(prompt.contains("Where they conflict"))
+        XCTAssertLessThan(prompt.range(of: "weakness_tags")!.lowerBound,
+                          prompt.range(of: "Criteria for THIS interview")!.lowerBound,
+                          "criteria section comes after the base rubric")
+    }
+
+    func testAssembleOmitsCriteriaSectionWhenEmptyOrWhitespace() throws {
+        try store.ensureDefaults()
+        let prompt = try store.assembleSystemPrompt(
+            roundType: .behavioral, historyTags: [], customInstructions: "   \n  ")
+        XCTAssertFalse(prompt.contains("Criteria for THIS interview"))
+    }
 }
