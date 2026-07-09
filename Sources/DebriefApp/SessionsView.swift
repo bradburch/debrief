@@ -58,6 +58,7 @@ struct SessionDetailView: View {
     var onRenamed: (() -> Void)? = nil
     @State private var detail: SessionDetail?
     @State private var companyName = ""
+    @State private var renameError: String?
     @State private var scrollTarget: Double?
     @State private var regenerating = false
 
@@ -76,6 +77,7 @@ struct SessionDetailView: View {
             detail = try? env.db.sessionDetail(id: sessionId)
             companyName = detail?.company.name ?? ""
         }
+        .onDisappear { if let detail { commitRename(detail) } }
     }
 
     private func commitRename(_ d: SessionDetail) {
@@ -84,9 +86,19 @@ struct SessionDetailView: View {
             companyName = d.company.name
             return
         }
-        try? env.db.updateCompanyName(id: id, name: trimmed)
-        detail = try? env.db.sessionDetail(id: sessionId)
-        onRenamed?()
+        do {
+            try env.db.updateCompanyName(id: id, name: trimmed)
+            var renamedCompany = d.company
+            renamedCompany.name = trimmed
+            detail = SessionDetail(session: d.session, company: renamedCompany,
+                                    segments: d.segments, feedback: d.feedback, tags: d.tags)
+            companyName = trimmed
+            renameError = nil
+            onRenamed?()
+        } catch {
+            companyName = d.company.name
+            renameError = "\"\(trimmed)\" is already in use by another session."
+        }
     }
 
     @ViewBuilder
@@ -100,6 +112,9 @@ struct SessionDetailView: View {
                     Text("— \(d.session.roundType.displayName)").foregroundStyle(.secondary)
                 }
                 .font(.title2).bold()
+                if let renameError {
+                    Text(renameError).font(.caption).foregroundStyle(.red)
+                }
                 if let f = d.feedback {
                     if !d.tags.isEmpty {
                         HStack {

@@ -21,6 +21,15 @@ public struct SessionDetail: Sendable {
     public let segments: [TranscriptSegmentRecord]
     public let feedback: FeedbackRecord?
     public let tags: [String]
+
+    public init(session: InterviewSession, company: Company, segments: [TranscriptSegmentRecord],
+                feedback: FeedbackRecord?, tags: [String]) {
+        self.session = session
+        self.company = company
+        self.segments = segments
+        self.feedback = feedback
+        self.tags = tags
+    }
 }
 
 public func formatTimestamp(_ seconds: Double) -> String {
