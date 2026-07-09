@@ -22,3 +22,4 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
    The popover offers recovery; recovering produces a session from the partial audio.
 9. **Audio deletion**: with "Keep raw audio" off, confirm
    `~/Library/Application Support/Debrief/recordings/` is empty after a successful debrief.
+- [ ] Open a session, paste text into "Grading criteria for this interview", click Regenerate; the new debrief reflects the criteria. Reopen the session — the criteria text is still there.

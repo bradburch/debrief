@@ -43,10 +43,13 @@ public struct InterviewSession: Codable, Identifiable, Equatable, Sendable, Fetc
     public var durationSeconds: Int
     public var contextNotes: String
     public var coachingStatus: CoachingStatus
+    public var customInstructions: String
     public init(id: Int64?, companyId: Int64, roundType: RoundType, date: Date,
-                durationSeconds: Int, contextNotes: String, coachingStatus: CoachingStatus) {
+                durationSeconds: Int, contextNotes: String, coachingStatus: CoachingStatus,
+                customInstructions: String = "") {
         self.id = id; self.companyId = companyId; self.roundType = roundType; self.date = date
         self.durationSeconds = durationSeconds; self.contextNotes = contextNotes; self.coachingStatus = coachingStatus
+        self.customInstructions = customInstructions
     }
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }

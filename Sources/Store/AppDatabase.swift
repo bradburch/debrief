@@ -59,6 +59,11 @@ public final class AppDatabase: Sendable {
             }
             try db.create(indexOn: "weaknessTag", columns: ["tag"])
         }
+        m.registerMigration("v2") { db in
+            try db.alter(table: "session") { t in
+                t.add(column: "customInstructions", .text).notNull().defaults(to: "")
+            }
+        }
         return m
     }
 }

@@ -59,6 +59,12 @@ extension AppDatabase {
         }
     }
 
+    public func updateSessionCriteria(id: Int64, _ text: String) throws {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE session SET customInstructions = ? WHERE id = ?", arguments: [text, id])
+        }
+    }
+
     public func insertSession(_ s: InterviewSession) throws -> InterviewSession {
         try dbWriter.write { db in var s = s; try s.insert(db); return s }
     }
