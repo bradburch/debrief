@@ -89,13 +89,21 @@ to *Debrief* instead of your terminal.
   (recruiter screen / behavioral / technical / system design), hit **Stop &
   Debrief**, and within a minute or two you get scored feedback with clickable
   transcript highlights and concrete action items.
+- **Tailor the grading per interview.** Open a session and paste interview-specific
+  criteria — a job's published rubric, a leveling guide, "focus on system-design
+  trade-offs, this is a staff role" — into **Grading criteria for this interview**,
+  then hit **Regenerate**. The model weights your criteria above the built-in
+  rubric where they conflict, while still applying the base dimensions, weakness
+  tags, and output format. It's scoped to that one recording and doesn't affect
+  any other session.
 - **Track progress.** The **Pipeline** view groups sessions by company and round;
   the **Trends** view charts your recurring weakness tags and score dimensions
   over time, so "am I actually improving?" is answerable, not a vibe.
 
-The coaching prompts are plain markdown in
+Two layers of prompt control: the **global** coaching prompts are plain markdown in
 `~/Library/Application Support/Debrief/prompts/` — edit `base.md` or any
-round-type overlay to retune the feedback without rebuilding.
+round-type overlay to retune every debrief without rebuilding — and the
+**per-interview** grading-criteria box above overrides them for a single session.
 
 ## Privacy
 
