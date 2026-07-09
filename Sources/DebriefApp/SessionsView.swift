@@ -61,6 +61,7 @@ struct SessionDetailView: View {
     @State private var renameError: String?
     @State private var scrollTarget: Double?
     @State private var regenerating = false
+    @State private var criteria = ""
 
     var body: some View {
         Group {
@@ -76,8 +77,13 @@ struct SessionDetailView: View {
         .onAppear {
             detail = try? env.db.sessionDetail(id: sessionId)
             companyName = detail?.company.name ?? ""
+            criteria = detail?.session.customInstructions ?? ""
         }
-        .onDisappear { if let detail { commitRename(detail) } }
+        .onDisappear { if let detail { commitRename(detail); commitCriteria() } }
+    }
+
+    private func commitCriteria() {
+        try? env.db.updateSessionCriteria(id: sessionId, criteria)
     }
 
     private func commitRename(_ d: SessionDetail) {
@@ -115,6 +121,27 @@ struct SessionDetailView: View {
                 if let renameError {
                     Text(renameError).font(.caption).foregroundStyle(.red)
                 }
+                GroupBox("Grading criteria for this interview") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextEditor(text: $criteria)
+                            .frame(minHeight: 60, maxHeight: 140)
+                            .font(.callout)
+                        HStack {
+                            Text("Paste a rubric or focus for this interview. Applied when you (re)generate the debrief.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button(regenerating ? "Regenerating…" : (d.feedback == nil ? "Generate debrief" : "Regenerate")) {
+                                regenerating = true
+                                Task {
+                                    try? env.db.updateSessionCriteria(id: sessionId, criteria)
+                                    try? await env.coaching.coach(sessionId: sessionId)
+                                    detail = try? env.db.sessionDetail(id: sessionId)
+                                    regenerating = false
+                                }
+                            }.disabled(regenerating)
+                        }
+                    }
+                }
                 if let f = d.feedback {
                     if !d.tags.isEmpty {
                         HStack {
@@ -151,14 +178,6 @@ struct SessionDetailView: View {
                     }
                 } else {
                     Text("No debrief yet (\(d.session.coachingStatus.rawValue)).")
-                    Button(regenerating ? "Regenerating…" : "Regenerate debrief") {
-                        regenerating = true
-                        Task {
-                            try? await env.coaching.coach(sessionId: sessionId)
-                            detail = try? env.db.sessionDetail(id: sessionId)
-                            regenerating = false
-                        }
-                    }.disabled(regenerating)
                 }
             }
             .padding()
