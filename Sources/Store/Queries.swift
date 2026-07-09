@@ -21,6 +21,15 @@ public struct SessionDetail: Sendable {
     public let segments: [TranscriptSegmentRecord]
     public let feedback: FeedbackRecord?
     public let tags: [String]
+
+    public init(session: InterviewSession, company: Company, segments: [TranscriptSegmentRecord],
+                feedback: FeedbackRecord?, tags: [String]) {
+        self.session = session
+        self.company = company
+        self.segments = segments
+        self.feedback = feedback
+        self.tags = tags
+    }
 }
 
 public func formatTimestamp(_ seconds: Double) -> String {
@@ -41,6 +50,12 @@ extension AppDatabase {
     public func updateCompanyStatus(id: Int64, status: CompanyStatus) throws {
         try dbWriter.write { db in
             try db.execute(sql: "UPDATE company SET status = ? WHERE id = ?", arguments: [status.rawValue, id])
+        }
+    }
+
+    public func updateCompanyName(id: Int64, name: String) throws {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE company SET name = ? WHERE id = ?", arguments: [name, id])
         }
     }
 
