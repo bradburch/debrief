@@ -12,11 +12,32 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(a.id, b.id)
     }
 
-    func testUpdateCompanyNameRenamesExistingCompany() throws {
-        let co = try db.fetchOrCreateCompany(named: "Unknown")
-        try db.updateCompanyName(id: co.id!, name: "Acme")
-        let renamed = try db.fetchOrCreateCompany(named: "Acme")
-        XCTAssertEqual(renamed.id, co.id)
+    func testRenameSessionDoesNotAffectSiblingsSharingCompany() throws {
+        let unknown = try db.fetchOrCreateCompany(named: "Unknown")
+        func makeSession() throws -> Int64 {
+            try db.insertSession(InterviewSession(
+                id: nil, companyId: unknown.id!, roundType: .behavioral,
+                date: Date(timeIntervalSince1970: 1_750_000_000),
+                durationSeconds: 60, contextNotes: "", coachingStatus: .pending)).id!
+        }
+        let a = try makeSession()
+        let b = try makeSession()
+
+        let renamed = try db.renameSession(id: a, companyNamed: "Acme")
+        XCTAssertNotEqual(renamed.id, unknown.id)                         // peeled off to its own company
+        XCTAssertEqual(try db.sessionDetail(id: a)?.company.name, "Acme")
+        XCTAssertEqual(try db.sessionDetail(id: b)?.company.name, "Unknown")  // sibling untouched
+    }
+
+    func testRenameSessionReusesExistingCompany() throws {
+        let acme = try db.fetchOrCreateCompany(named: "Acme")
+        let unknown = try db.fetchOrCreateCompany(named: "Unknown")
+        let s = try db.insertSession(InterviewSession(
+            id: nil, companyId: unknown.id!, roundType: .behavioral,
+            date: Date(timeIntervalSince1970: 1_750_000_000),
+            durationSeconds: 60, contextNotes: "", coachingStatus: .pending)).id!
+        let renamed = try db.renameSession(id: s, companyNamed: "Acme")
+        XCTAssertEqual(renamed.id, acme.id)  // attaches to existing company, no duplicate
     }
 
     func testSessionRoundTripAndDetail() throws {

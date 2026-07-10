@@ -53,9 +53,21 @@ extension AppDatabase {
         }
     }
 
-    public func updateCompanyName(id: Int64, name: String) throws {
+    /// Re-point a session to a company with the given name (created if new). Renaming this way
+    /// affects only this session — mutating company.name would rename every session sharing it,
+    /// which is how all "Unknown" sessions used to change titles together.
+    @discardableResult
+    public func renameSession(id sessionId: Int64, companyNamed name: String) throws -> Company {
         try dbWriter.write { db in
-            try db.execute(sql: "UPDATE company SET name = ? WHERE id = ?", arguments: [name, id])
+            let company: Company
+            if let existing = try Company.filter(Column("name") == name).fetchOne(db) {
+                company = existing
+            } else {
+                var c = Company(name: name); try c.insert(db); company = c
+            }
+            try db.execute(sql: "UPDATE session SET companyId = ? WHERE id = ?",
+                           arguments: [company.id, sessionId])
+            return company
         }
     }
 
