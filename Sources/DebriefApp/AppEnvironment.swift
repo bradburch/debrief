@@ -53,8 +53,13 @@ final class AppEnvironment: ObservableObject {
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? ""
     }
 
+    static func resolveModel() -> String {
+        UserDefaults.standard.string(forKey: "coachingModel") ?? "claude-opus-4-8"
+    }
+
     func rebuildCoaching() {
-        coaching = CoachingService(db: db, prompts: prompts, llm: AnthropicClient(apiKey: Self.resolveAPIKey()))
+        coaching = CoachingService(db: db, prompts: prompts,
+                                   llm: AnthropicClient(apiKey: Self.resolveAPIKey(), model: Self.resolveModel()))
         coordinator.coaching = coaching
     }
 
@@ -65,7 +70,8 @@ final class AppEnvironment: ObservableObject {
             let prompts = PromptStore(directory: PromptStore.defaultDirectory())
             try prompts.ensureDefaults()
             let apiKey = resolveAPIKey()
-            let coaching = CoachingService(db: db, prompts: prompts, llm: AnthropicClient(apiKey: apiKey))
+            let coaching = CoachingService(db: db, prompts: prompts,
+                                           llm: AnthropicClient(apiKey: apiKey, model: resolveModel()))
             let keepAudio = UserDefaults.standard.bool(forKey: "keepAudioAfterTranscription")
             let coordinator = RecordingCoordinator(
                 db: db, coaching: coaching,
