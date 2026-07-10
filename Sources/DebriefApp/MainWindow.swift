@@ -1,4 +1,5 @@
 import SwiftUI
+import Store
 
 extension Color {
     /// Debrief's score-quality scale, shared by the Sessions list and Pipeline cells.
@@ -29,13 +30,83 @@ struct MainWindow: View {
             }
             .navigationSplitViewColumnWidth(180)
         } detail: {
-            switch tab ?? .sessions {
-            case .sessions: SessionsView()
-            case .pipeline: PipelineView()
-            case .trends: TrendsView()
-            case .settings: SettingsView()
+            VStack(spacing: 0) {
+                RecordingBar()
+                Divider()
+                switch tab ?? .sessions {
+                case .sessions: SessionsView()
+                case .pipeline: PipelineView()
+                case .trends: TrendsView()
+                case .settings: SettingsView()
+                }
             }
         }
         .frame(minWidth: 900, minHeight: 560)
+    }
+}
+
+struct RecordingBar: View {
+    @EnvironmentObject var env: AppEnvironment
+    @State private var company = ""
+    @State private var roundType: RoundType = .behavioral
+    @State private var notes = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch env.coordinator.phase {
+            case .idle:
+                HStack {
+                    if env.callDetected {
+                        Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
+                    } else {
+                        Text("No recording in progress").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await env.coordinator.startRecording() }
+                    } label: {
+                        Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
+                    }
+                }
+            case .recording(let started):
+                HStack {
+                    Label("Recording \(started, style: .timer)", systemImage: "record.circle.fill")
+                        .foregroundStyle(.red)
+                    Spacer()
+                }
+                LevelRow(label: "You", level: env.coordinator.micLevel)
+                LevelRow(label: "Them", level: env.coordinator.systemLevel)
+                if let warning = env.coordinator.streamWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow).font(.caption)
+                }
+                // ponytail: the Company/Round/Notes stop-form is reproduced from MenuBarView
+                // rather than shared via a @Binding-plumbed subview — ~12 lines read clearer
+                // than the abstraction. Upgrade path: extract a RecordingControls view if a
+                // third caller appears.
+                HStack {
+                    TextField("Company", text: $company).frame(maxWidth: 200)
+                    Picker("Round", selection: $roundType) {
+                        ForEach(RoundType.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    }.frame(maxWidth: 220)
+                    TextField("Notes (optional)", text: $notes)
+                    Button("Stop & Debrief") {
+                        Task {
+                            let name = company.isEmpty ? "Unknown" : company
+                            _ = await env.coordinator.stopAndFinalize(
+                                metadata: .init(company: name, roundType: roundType, notes: notes))
+                            company = ""; notes = ""
+                        }
+                    }
+                }
+            case .finalizing(let status):
+                HStack { ProgressView().controlSize(.small); Text(status) }
+            case .failed(let message):
+                Label(message, systemImage: "xmark.octagon.fill")
+                    .foregroundStyle(.red).font(.caption).lineLimit(3)
+            }
+        }
+        .padding(10)
+        .background(.bar)
     }
 }
