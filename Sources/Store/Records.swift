@@ -3,19 +3,32 @@ import GRDB
 
 public enum CompanyStatus: String, Codable, CaseIterable, Sendable { case active, dead, offer }
 
-public enum RoundType: String, Codable, CaseIterable, Sendable {
-    case recruiterScreen = "recruiter_screen"
-    case behavioral
-    case technical
-    case systemDesign = "system_design"
+/// String-backed (not an enum) so users can add round types by dropping a
+/// prompt overlay file — see PromptStore.availableRoundTypes().
+public struct RoundType: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
 
+    public static let recruiterScreen = RoundType(rawValue: "recruiter_screen")
+    public static let behavioral = RoundType(rawValue: "behavioral")
+    public static let technical = RoundType(rawValue: "technical")
+    public static let systemDesign = RoundType(rawValue: "system_design")
+    public static let builtins: [RoundType] = [.recruiterScreen, .behavioral, .technical, .systemDesign]
+
+    /// "take_home_review" → "Take Home Review". Matches the old hardcoded
+    /// names for all four builtins, so no special-casing.
     public var displayName: String {
-        switch self {
-        case .recruiterScreen: return "Recruiter Screen"
-        case .behavioral: return "Behavioral"
-        case .technical: return "Technical"
-        case .systemDesign: return "System Design"
-        }
+        rawValue.split(separator: "_").map(\.capitalized).joined(separator: " ")
+    }
+
+    // Explicit single-value coding: memberwise synthesis would encode
+    // {"rawValue": "..."} and corrupt DB round-trips.
+    public init(from decoder: Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(rawValue)
     }
 }
 

@@ -87,7 +87,7 @@ struct RecordingBar: View {
                 HStack {
                     TextField("Company", text: $company).frame(maxWidth: 200)
                     Picker("Round", selection: $roundType) {
-                        ForEach(RoundType.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                        ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
                     }.frame(maxWidth: 220)
                     TextField("Notes (optional)", text: $notes)
                     Button("Stop & Debrief") {

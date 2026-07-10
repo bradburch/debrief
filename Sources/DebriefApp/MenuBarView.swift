@@ -43,7 +43,7 @@ struct MenuBarView: View {
                 Divider()
                 TextField("Company", text: $company)
                 Picker("Round", selection: $roundType) {
-                    ForEach(RoundType.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
                 }
                 TextField("Notes (optional)", text: $notes)
                 Button("Stop & Debrief") {
