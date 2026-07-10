@@ -152,7 +152,7 @@ extension AppDatabase {
             var points: [ScorePoint] = []
             for row in rows {
                 let date: Date = row["date"]
-                guard let rt = RoundType(rawValue: row["roundType"]) else { continue }
+                let rt = RoundType(rawValue: row["roundType"])
                 let data = (row["scoresJSON"] as String).data(using: .utf8) ?? Data()
                 let scores = (try? JSONDecoder().decode([String: Int].self, from: data)) ?? [:]
                 for (dim, score) in scores {
@@ -172,9 +172,9 @@ extension AppDatabase {
                     FROM session s LEFT JOIN feedback f ON f.sessionId = s.id
                     WHERE s.companyId = ? ORDER BY s.date
                     """, arguments: [co.id])
-                let sessions = rows.compactMap { row -> SessionSummary? in
-                    guard let rt = RoundType(rawValue: row["roundType"]) else { return nil }
-                    return SessionSummary(id: row["id"], roundType: rt, date: row["date"], overallScore: row["overallScore"])
+                let sessions = rows.map { row in
+                    SessionSummary(id: row["id"], roundType: RoundType(rawValue: row["roundType"]),
+                                   date: row["date"], overallScore: row["overallScore"])
                 }
                 return CompanyPipeline(company: co, sessions: sessions)
             }

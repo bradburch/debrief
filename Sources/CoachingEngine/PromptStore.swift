@@ -29,6 +29,9 @@ public struct PromptStore: Sendable {
         }
     }
 
+    // Temporary until file-based discovery lands: builtins only.
+    public func availableRoundTypes() -> [RoundType] { RoundType.builtins }
+
     public func assembleSystemPrompt(roundType: RoundType,
                                      historyTags: [(tag: String, count: Int)],
                                      customInstructions: String = "") throws -> String {

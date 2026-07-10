@@ -12,12 +12,29 @@ public enum ClaudeError: Error, Equatable {
 }
 
 public struct AnthropicClient: CoachingLLM {
+    /// Single source of truth for the default model — also referenced by the app's
+    /// model setting so the picker default and the client default can't drift apart.
+    public static let defaultModel = "claude-opus-4-8"
+
     let apiKey: String
+    let model: String
     let session: URLSession
 
-    public init(apiKey: String, session: URLSession = .shared) {
+    public init(apiKey: String, model: String = AnthropicClient.defaultModel, session: URLSession = .shared) {
         self.apiKey = apiKey
+        self.model = model
         self.session = session
+    }
+
+    /// Adaptive thinking is a Claude 4.6+ feature; pre-4.6 models (e.g. Haiku 4.5)
+    /// reject it with a 400 and require the older enabled+budget form. Without this
+    /// branch, selecting Haiku in Settings would fail every debrief.
+    /// ponytail: substring match over the one non-adaptive model we offer; extend the
+    /// check if older models are added to the picker.
+    var thinkingParam: [String: Any] {
+        model.contains("haiku")
+            ? ["type": "enabled", "budget_tokens": 8000]  // < max_tokens (16000), > 1024 min
+            : ["type": "adaptive"]
     }
 
     /// JSON schema for structured outputs: guarantees the response text is a single
@@ -62,9 +79,9 @@ public struct AnthropicClient: CoachingLLM {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
         let body: [String: Any] = [
-            "model": "claude-opus-4-8",
+            "model": model,
             "max_tokens": 16000,
-            "thinking": ["type": "adaptive"],
+            "thinking": thinkingParam,
             "system": systemPrompt,
             "messages": [["role": "user", "content": userMessage]],
             "output_config": ["format": ["type": "json_schema", "schema": Self.outputSchema]],

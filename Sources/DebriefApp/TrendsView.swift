@@ -13,7 +13,7 @@ struct TrendsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Picker("Round type", selection: $roundFilter) {
                     Text("All rounds").tag(RoundType?.none)
-                    ForEach(RoundType.allCases, id: \.self) { Text($0.displayName).tag(RoundType?.some($0)) }
+                    ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag(RoundType?.some($0)) }
                 }
                 .frame(width: 260)
 

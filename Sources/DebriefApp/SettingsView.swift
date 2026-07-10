@@ -8,6 +8,13 @@ struct SettingsView: View {
     @State private var saveError: String?
     @AppStorage("keepAudioAfterTranscription") private var keepAudio = false
     @State private var retryResult: String?
+    @AppStorage("coachingModel") private var model = AnthropicClient.defaultModel
+
+    private let modelOptions: [(label: String, id: String)] = [
+        ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),
+        ("Sonnet 5 — balanced", "claude-sonnet-5"),
+        ("Haiku 4.5 — fastest, cheapest", "claude-haiku-4-5-20251001"),
+    ]
 
     private var envAPIKeyPresent: Bool {
         !(ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? "").isEmpty
@@ -44,6 +51,12 @@ struct SettingsView: View {
                     if saved { Text("Saved ✓").foregroundStyle(.green) }
                     if let saveError { Text(saveError).foregroundStyle(.red) }
                 }
+                Picker("Model", selection: $model) {
+                    ForEach(modelOptions, id: \.id) { Text($0.label).tag($0.id) }
+                }
+                .onChange(of: model) { env.rebuildCoaching() }
+                Text("Which Claude model generates debriefs. Applies to the next (re)generate.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Audio") {
                 Toggle("Keep raw audio after transcription", isOn: $keepAudio)

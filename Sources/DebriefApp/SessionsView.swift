@@ -5,35 +5,81 @@ import CoachingEngine
 struct SessionsView: View {
     @EnvironmentObject var env: AppEnvironment
     @State private var rows: [(session: InterviewSession, companyName: String, overallScore: Double?)] = []
-    @State private var selectedId: Int64?
+    @State private var selection: Set<Int64> = []
+    @State private var confirmingDelete = false
+    @State private var filterText = ""
+
+    private var filteredRows: [(session: InterviewSession, companyName: String, overallScore: Double?)] {
+        let q = filterText.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return rows }
+        return rows.filter { $0.companyName.localizedCaseInsensitiveContains(q) }
+    }
 
     var body: some View {
         HSplitView {
-            List(selection: $selectedId) {
-                ForEach(rows, id: \.session.id) { row in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            Text(row.companyName).bold()
-                            Spacer()
-                            if let score = row.overallScore {
-                                Text(String(format: "%.1f", score)).monospacedDigit()
-                                    .foregroundStyle(Color.forScore(score))
-                            } else {
-                                statusBadge(row.session.coachingStatus)
+            VStack(spacing: 0) {
+                if rows.isEmpty {
+                    ContentUnavailableView(
+                        "No sessions yet",
+                        systemImage: "waveform",
+                        description: Text("Click Record in the menu bar when a call starts."))
+                } else {
+                    TextField("Filter by company", text: $filterText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(8)
+                    if filteredRows.isEmpty {
+                        ContentUnavailableView.search(text: filterText)
+                    } else {
+                        List(selection: $selection) {
+                            ForEach(filteredRows, id: \.session.id) { row in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(row.companyName).bold()
+                                        Spacer()
+                                        if let score = row.overallScore {
+                                            Text(String(format: "%.1f", score)).monospacedDigit()
+                                                .foregroundStyle(Color.forScore(score))
+                                        } else {
+                                            statusBadge(row.session.coachingStatus)
+                                        }
+                                    }
+                                    Text("\(row.session.roundType.displayName) · \(row.session.date.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                .tag(row.session.id!)
+                                .contextMenu {
+                                    Button("Delete", role: .destructive) {
+                                        // If the right-clicked row isn't in the current multi-selection,
+                                        // act on just that row (standard Finder behavior).
+                                        if !selection.contains(row.session.id!) { selection = [row.session.id!] }
+                                        confirmingDelete = true
+                                    }
+                                }
                             }
                         }
-                        Text("\(row.session.roundType.displayName) · \(row.session.date.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption).foregroundStyle(.secondary)
+                        .onDeleteCommand { if !selection.isEmpty { confirmingDelete = true } }
+                        .confirmationDialog(deleteTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
+                            Button("Delete", role: .destructive, action: deleteSelected)
+                            Button("Cancel", role: .cancel) {}
+                        }
                     }
-                    .tag(row.session.id!)
                 }
             }
             .frame(minWidth: 260, maxWidth: 340)
+            // Drop any selected ids no longer visible, so a hidden-but-selected row can't be
+            // bulk-deleted and the detail pane can't dangle. Keyed on the visible id list, so
+            // it fires both when the filter changes and when rows change (e.g. a rename →
+            // reload that filters a selected row out without touching filterText).
+            .onChange(of: filteredRows.map { $0.session.id! }) {
+                selection.formIntersection(Set(filteredRows.map { $0.session.id! }))
+            }
 
-            if let id = selectedId {
+            if selection.count == 1, let id = selection.first {
                 SessionDetailView(sessionId: id, onRenamed: reload).id(id)
             } else {
-                Text("Select a session").frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text(selection.isEmpty ? "Select a session" : "\(selection.count) sessions selected")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onAppear(perform: reload)
@@ -41,6 +87,17 @@ struct SessionsView: View {
     }
 
     private func reload() { rows = (try? env.db.allSessionSummaries()) ?? [] }
+
+    private var deleteTitle: String {
+        selection.count == 1 ? "Delete this session? This can’t be undone."
+                             : "Delete \(selection.count) sessions? This can’t be undone."
+    }
+
+    private func deleteSelected() {
+        for id in selection { try? env.db.deleteSession(id: id) }
+        selection = []
+        reload()
+    }
 
     @ViewBuilder
     private func statusBadge(_ status: CoachingStatus) -> some View {
@@ -121,7 +178,7 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 4) {
                     TextField("Title", text: $companyName)
-                        .textFieldStyle(.plain)
+                        .textFieldStyle(.roundedBorder)
                         .onSubmit { commitRename(d) }
                     Text("— \(d.session.roundType.displayName)").foregroundStyle(.secondary)
                 }
@@ -138,6 +195,10 @@ struct SessionDetailView: View {
                             .onChange(of: criteria) { commitCriteria() }  // durable: survives quit without a click
                         if let regenerateError {
                             Text(regenerateError).font(.caption).foregroundStyle(.red)
+                        }
+                        if d.session.coachingStatus == .failed && d.feedback == nil {
+                            Label("Last debrief failed — press Generate to retry.", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
                         }
                         HStack {
                             Text("Paste a rubric or focus for this interview. Applied when you (re)generate the debrief.")

@@ -16,6 +16,15 @@ final class AppEnvironment: ObservableObject {
     let coordinator: RecordingCoordinator
     @Published var callDetected = false
     @Published var recoverableSessions: [URL] = []
+    // Stop-form fields shared by the menu-bar popover and the in-window recording bar,
+    // so metadata typed in one surface isn't lost when the recording is stopped from the
+    // other (both bind to these instead of keeping private @State). roundType stays sticky
+    // across recordings; company/notes are cleared on stop.
+    @Published var recordCompany = ""
+    @Published var recordRoundType: RoundType = .behavioral
+    @Published var recordNotes = ""
+
+    func clearRecordMetadata() { recordCompany = ""; recordNotes = "" }
 
     private var detector = CallDetector()
     private var detectTimer: Timer?
@@ -53,8 +62,13 @@ final class AppEnvironment: ObservableObject {
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? ""
     }
 
+    static func resolveModel() -> String {
+        UserDefaults.standard.string(forKey: "coachingModel") ?? AnthropicClient.defaultModel
+    }
+
     func rebuildCoaching() {
-        coaching = CoachingService(db: db, prompts: prompts, llm: AnthropicClient(apiKey: Self.resolveAPIKey()))
+        coaching = CoachingService(db: db, prompts: prompts,
+                                   llm: AnthropicClient(apiKey: Self.resolveAPIKey(), model: Self.resolveModel()))
         coordinator.coaching = coaching
     }
 
@@ -65,7 +79,8 @@ final class AppEnvironment: ObservableObject {
             let prompts = PromptStore(directory: PromptStore.defaultDirectory())
             try prompts.ensureDefaults()
             let apiKey = resolveAPIKey()
-            let coaching = CoachingService(db: db, prompts: prompts, llm: AnthropicClient(apiKey: apiKey))
+            let coaching = CoachingService(db: db, prompts: prompts,
+                                           llm: AnthropicClient(apiKey: apiKey, model: resolveModel()))
             let keepAudio = UserDefaults.standard.bool(forKey: "keepAudioAfterTranscription")
             let coordinator = RecordingCoordinator(
                 db: db, coaching: coaching,
