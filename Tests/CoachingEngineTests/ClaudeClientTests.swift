@@ -94,6 +94,32 @@ final class ClaudeClientTests: XCTestCase {
         }
         _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u")
     }
+
+    func testThinkingConfigMatchesModelCapability() async throws {
+        func thinking(forModel model: String) async throws -> [String: Any] {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [MockURLProtocol.self]
+            let client = AnthropicClient(apiKey: "k", model: model,
+                                         session: URLSession(configuration: config))
+            var captured: [String: Any] = [:]
+            MockURLProtocol.handler = { request in
+                let body = try! JSONSerialization.jsonObject(with: request.bodyData()) as! [String: Any]
+                captured = body["thinking"] as! [String: Any]
+                return (200, self.envelope(text: Self.goodPayload))
+            }
+            _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u")
+            return captured
+        }
+        // Adaptive-capable 4.6+ models send adaptive thinking.
+        let opus = try await thinking(forModel: "claude-opus-4-8")
+        let sonnet = try await thinking(forModel: "claude-sonnet-5")
+        XCTAssertEqual(opus["type"] as? String, "adaptive")
+        XCTAssertEqual(sonnet["type"] as? String, "adaptive")
+        // Haiku 4.5 rejects adaptive (400); it must get enabled + a budget under max_tokens.
+        let haiku = try await thinking(forModel: "claude-haiku-4-5-20251001")
+        XCTAssertEqual(haiku["type"] as? String, "enabled")
+        XCTAssertEqual(haiku["budget_tokens"] as? Int, 8000)
+    }
 }
 
 extension URLRequest {

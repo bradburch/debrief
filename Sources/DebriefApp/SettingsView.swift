@@ -8,7 +8,7 @@ struct SettingsView: View {
     @State private var saveError: String?
     @AppStorage("keepAudioAfterTranscription") private var keepAudio = false
     @State private var retryResult: String?
-    @AppStorage("coachingModel") private var model = "claude-opus-4-8"
+    @AppStorage("coachingModel") private var model = AnthropicClient.defaultModel
 
     private let modelOptions: [(label: String, id: String)] = [
         ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),

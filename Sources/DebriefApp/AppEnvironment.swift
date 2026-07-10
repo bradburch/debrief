@@ -16,6 +16,15 @@ final class AppEnvironment: ObservableObject {
     let coordinator: RecordingCoordinator
     @Published var callDetected = false
     @Published var recoverableSessions: [URL] = []
+    // Stop-form fields shared by the menu-bar popover and the in-window recording bar,
+    // so metadata typed in one surface isn't lost when the recording is stopped from the
+    // other (both bind to these instead of keeping private @State). roundType stays sticky
+    // across recordings; company/notes are cleared on stop.
+    @Published var recordCompany = ""
+    @Published var recordRoundType: RoundType = .behavioral
+    @Published var recordNotes = ""
+
+    func clearRecordMetadata() { recordCompany = ""; recordNotes = "" }
 
     private var detector = CallDetector()
     private var detectTimer: Timer?
@@ -54,7 +63,7 @@ final class AppEnvironment: ObservableObject {
     }
 
     static func resolveModel() -> String {
-        UserDefaults.standard.string(forKey: "coachingModel") ?? "claude-opus-4-8"
+        UserDefaults.standard.string(forKey: "coachingModel") ?? AnthropicClient.defaultModel
     }
 
     func rebuildCoaching() {

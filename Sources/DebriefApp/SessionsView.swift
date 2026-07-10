@@ -27,47 +27,52 @@ struct SessionsView: View {
                     TextField("Filter by company", text: $filterText)
                         .textFieldStyle(.roundedBorder)
                         .padding(8)
-                    List(selection: $selection) {
-                        ForEach(filteredRows, id: \.session.id) { row in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text(row.companyName).bold()
-                                    Spacer()
-                                    if let score = row.overallScore {
-                                        Text(String(format: "%.1f", score)).monospacedDigit()
-                                            .foregroundStyle(Color.forScore(score))
-                                    } else {
-                                        statusBadge(row.session.coachingStatus)
+                    if filteredRows.isEmpty {
+                        ContentUnavailableView.search(text: filterText)
+                    } else {
+                        List(selection: $selection) {
+                            ForEach(filteredRows, id: \.session.id) { row in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(row.companyName).bold()
+                                        Spacer()
+                                        if let score = row.overallScore {
+                                            Text(String(format: "%.1f", score)).monospacedDigit()
+                                                .foregroundStyle(Color.forScore(score))
+                                        } else {
+                                            statusBadge(row.session.coachingStatus)
+                                        }
                                     }
+                                    Text("\(row.session.roundType.displayName) · \(row.session.date.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
-                                Text("\(row.session.roundType.displayName) · \(row.session.date.formatted(date: .abbreviated, time: .shortened))")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            .tag(row.session.id!)
-                            .contextMenu {
-                                Button("Delete", role: .destructive) {
-                                    // If the right-clicked row isn't in the current multi-selection,
-                                    // act on just that row (standard Finder behavior).
-                                    if !selection.contains(row.session.id!) { selection = [row.session.id!] }
-                                    confirmingDelete = true
+                                .tag(row.session.id!)
+                                .contextMenu {
+                                    Button("Delete", role: .destructive) {
+                                        // If the right-clicked row isn't in the current multi-selection,
+                                        // act on just that row (standard Finder behavior).
+                                        if !selection.contains(row.session.id!) { selection = [row.session.id!] }
+                                        confirmingDelete = true
+                                    }
                                 }
                             }
                         }
-                    }
-                    .onDeleteCommand { if !selection.isEmpty { confirmingDelete = true } }
-                    .confirmationDialog(deleteTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
-                        Button("Delete", role: .destructive, action: deleteSelected)
-                        Button("Cancel", role: .cancel) {}
-                    }
-                    .onChange(of: filterText) {
-                        // Drop any selected ids no longer visible under the filter, so a
-                        // hidden-but-selected row can't be bulk-deleted and the detail pane
-                        // can't dangle on a filtered-out session.
-                        selection.formIntersection(Set(filteredRows.map { $0.session.id! }))
+                        .onDeleteCommand { if !selection.isEmpty { confirmingDelete = true } }
+                        .confirmationDialog(deleteTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
+                            Button("Delete", role: .destructive, action: deleteSelected)
+                            Button("Cancel", role: .cancel) {}
+                        }
                     }
                 }
             }
             .frame(minWidth: 260, maxWidth: 340)
+            // Drop any selected ids no longer visible, so a hidden-but-selected row can't be
+            // bulk-deleted and the detail pane can't dangle. Keyed on the visible id list, so
+            // it fires both when the filter changes and when rows change (e.g. a rename →
+            // reload that filters a selected row out without touching filterText).
+            .onChange(of: filteredRows.map { $0.session.id! }) {
+                selection.formIntersection(Set(filteredRows.map { $0.session.id! }))
+            }
 
             if selection.count == 1, let id = selection.first {
                 SessionDetailView(sessionId: id, onRenamed: reload).id(id)

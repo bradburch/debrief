@@ -47,9 +47,6 @@ struct MainWindow: View {
 
 struct RecordingBar: View {
     @EnvironmentObject var env: AppEnvironment
-    @State private var company = ""
-    @State private var roundType: RoundType = .behavioral
-    @State private var notes = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -80,22 +77,23 @@ struct RecordingBar: View {
                     Label(warning, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow).font(.caption)
                 }
-                // ponytail: the Company/Round/Notes stop-form is reproduced from MenuBarView
-                // rather than shared via a @Binding-plumbed subview — ~12 lines read clearer
-                // than the abstraction. Upgrade path: extract a RecordingControls view if a
-                // third caller appears.
+                // ponytail: the Company/Round/Notes stop-form layout is reproduced from
+                // MenuBarView — ~12 lines read clearer than a shared @Binding-plumbed
+                // subview. The field *values* live on AppEnvironment (recordCompany/…), so
+                // the two surfaces share state and neither loses metadata the other typed.
+                // Upgrade path: extract a RecordingControls view if a third caller appears.
                 HStack {
-                    TextField("Company", text: $company).frame(maxWidth: 200)
-                    Picker("Round", selection: $roundType) {
+                    TextField("Company", text: $env.recordCompany).frame(maxWidth: 200)
+                    Picker("Round", selection: $env.recordRoundType) {
                         ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
                     }.frame(maxWidth: 220)
-                    TextField("Notes (optional)", text: $notes)
+                    TextField("Notes (optional)", text: $env.recordNotes)
                     Button("Stop & Debrief") {
                         Task {
-                            let name = company.isEmpty ? "Unknown" : company
+                            let name = env.recordCompany.isEmpty ? "Unknown" : env.recordCompany
                             _ = await env.coordinator.stopAndFinalize(
-                                metadata: .init(company: name, roundType: roundType, notes: notes))
-                            company = ""; notes = ""
+                                metadata: .init(company: name, roundType: env.recordRoundType, notes: env.recordNotes))
+                            env.clearRecordMetadata()
                         }
                     }
                 }

@@ -4,9 +4,6 @@ import Store
 struct MenuBarView: View {
     @EnvironmentObject var env: AppEnvironment
     @Environment(\.openWindow) private var openWindow
-    @State private var company = ""
-    @State private var roundType: RoundType = .behavioral
-    @State private var notes = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -41,17 +38,17 @@ struct MenuBarView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Divider()
-                TextField("Company", text: $company)
-                Picker("Round", selection: $roundType) {
+                TextField("Company", text: $env.recordCompany)
+                Picker("Round", selection: $env.recordRoundType) {
                     ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
                 }
-                TextField("Notes (optional)", text: $notes)
+                TextField("Notes (optional)", text: $env.recordNotes)
                 Button("Stop & Debrief") {
                     Task {
-                        let name = company.isEmpty ? "Unknown" : company
+                        let name = env.recordCompany.isEmpty ? "Unknown" : env.recordCompany
                         _ = await env.coordinator.stopAndFinalize(
-                            metadata: .init(company: name, roundType: roundType, notes: notes))
-                        company = ""; notes = ""
+                            metadata: .init(company: name, roundType: env.recordRoundType, notes: env.recordNotes))
+                        env.clearRecordMetadata()
                     }
                 }
             case .finalizing(let status):
