@@ -81,6 +81,19 @@ final class ClaudeClientTests: XCTestCase {
             XCTFail("expected throw")
         } catch let e as ClaudeError { XCTAssertEqual(e, .truncated) } catch { XCTFail("\(error)") }
     }
+
+    func testRequestBodyUsesConfiguredModel() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = AnthropicClient(apiKey: "test-key", model: "claude-sonnet-5",
+                                     session: URLSession(configuration: config))
+        MockURLProtocol.handler = { request in
+            let body = try! JSONSerialization.jsonObject(with: request.bodyData()) as! [String: Any]
+            XCTAssertEqual(body["model"] as? String, "claude-sonnet-5")
+            return (200, self.envelope(text: Self.goodPayload))
+        }
+        _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u")
+    }
 }
 
 extension URLRequest {

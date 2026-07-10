@@ -13,10 +13,12 @@ public enum ClaudeError: Error, Equatable {
 
 public struct AnthropicClient: CoachingLLM {
     let apiKey: String
+    let model: String
     let session: URLSession
 
-    public init(apiKey: String, session: URLSession = .shared) {
+    public init(apiKey: String, model: String = "claude-opus-4-8", session: URLSession = .shared) {
         self.apiKey = apiKey
+        self.model = model
         self.session = session
     }
 
@@ -62,7 +64,7 @@ public struct AnthropicClient: CoachingLLM {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
         let body: [String: Any] = [
-            "model": "claude-opus-4-8",
+            "model": model,
             "max_tokens": 16000,
             "thinking": ["type": "adaptive"],
             "system": systemPrompt,
