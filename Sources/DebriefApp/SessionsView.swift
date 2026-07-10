@@ -5,11 +5,12 @@ import CoachingEngine
 struct SessionsView: View {
     @EnvironmentObject var env: AppEnvironment
     @State private var rows: [(session: InterviewSession, companyName: String, overallScore: Double?)] = []
-    @State private var selectedId: Int64?
+    @State private var selection: Set<Int64> = []
+    @State private var confirmingDelete = false
 
     var body: some View {
         HSplitView {
-            List(selection: $selectedId) {
+            List(selection: $selection) {
                 ForEach(rows, id: \.session.id) { row in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
@@ -26,14 +27,29 @@ struct SessionsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .tag(row.session.id!)
+                    .contextMenu {
+                        Button("Delete", role: .destructive) {
+                            // If the right-clicked row isn't in the current multi-selection,
+                            // act on just that row (standard Finder behavior).
+                            if !selection.contains(row.session.id!) { selection = [row.session.id!] }
+                            confirmingDelete = true
+                        }
+                    }
                 }
             }
             .frame(minWidth: 260, maxWidth: 340)
+            .onDeleteCommand { if !selection.isEmpty { confirmingDelete = true } }
+            .confirmationDialog(deleteTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("Delete", role: .destructive, action: deleteSelected)
+                Button("Cancel", role: .cancel) {}
+            }
 
-            if let id = selectedId {
+            if selection.count == 1, let id = selection.first {
                 SessionDetailView(sessionId: id, onRenamed: reload).id(id)
             } else {
-                Text("Select a session").frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text(selection.isEmpty ? "Select a session" : "\(selection.count) sessions selected")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onAppear(perform: reload)
@@ -41,6 +57,17 @@ struct SessionsView: View {
     }
 
     private func reload() { rows = (try? env.db.allSessionSummaries()) ?? [] }
+
+    private var deleteTitle: String {
+        selection.count == 1 ? "Delete this session? This can’t be undone."
+                             : "Delete \(selection.count) sessions? This can’t be undone."
+    }
+
+    private func deleteSelected() {
+        for id in selection { try? env.db.deleteSession(id: id) }
+        selection = []
+        reload()
+    }
 
     @ViewBuilder
     private func statusBadge(_ status: CoachingStatus) -> some View {
