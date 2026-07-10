@@ -59,6 +59,12 @@ struct SessionsView: View {
                         Button("Delete", role: .destructive, action: deleteSelected)
                         Button("Cancel", role: .cancel) {}
                     }
+                    .onChange(of: filterText) {
+                        // Drop any selected ids no longer visible under the filter, so a
+                        // hidden-but-selected row can't be bulk-deleted and the detail pane
+                        // can't dangle on a filtered-out session.
+                        selection.formIntersection(Set(filteredRows.map { $0.session.id! }))
+                    }
                 }
             }
             .frame(minWidth: 260, maxWidth: 340)
