@@ -7,42 +7,61 @@ struct SessionsView: View {
     @State private var rows: [(session: InterviewSession, companyName: String, overallScore: Double?)] = []
     @State private var selection: Set<Int64> = []
     @State private var confirmingDelete = false
+    @State private var filterText = ""
+
+    private var filteredRows: [(session: InterviewSession, companyName: String, overallScore: Double?)] {
+        let q = filterText.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return rows }
+        return rows.filter { $0.companyName.localizedCaseInsensitiveContains(q) }
+    }
 
     var body: some View {
         HSplitView {
-            List(selection: $selection) {
-                ForEach(rows, id: \.session.id) { row in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            Text(row.companyName).bold()
-                            Spacer()
-                            if let score = row.overallScore {
-                                Text(String(format: "%.1f", score)).monospacedDigit()
-                                    .foregroundStyle(Color.forScore(score))
-                            } else {
-                                statusBadge(row.session.coachingStatus)
+            VStack(spacing: 0) {
+                if rows.isEmpty {
+                    ContentUnavailableView(
+                        "No sessions yet",
+                        systemImage: "waveform",
+                        description: Text("Click Record in the menu bar when a call starts."))
+                } else {
+                    TextField("Filter by company", text: $filterText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(8)
+                    List(selection: $selection) {
+                        ForEach(filteredRows, id: \.session.id) { row in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(row.companyName).bold()
+                                    Spacer()
+                                    if let score = row.overallScore {
+                                        Text(String(format: "%.1f", score)).monospacedDigit()
+                                            .foregroundStyle(Color.forScore(score))
+                                    } else {
+                                        statusBadge(row.session.coachingStatus)
+                                    }
+                                }
+                                Text("\(row.session.roundType.displayName) · \(row.session.date.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            .tag(row.session.id!)
+                            .contextMenu {
+                                Button("Delete", role: .destructive) {
+                                    // If the right-clicked row isn't in the current multi-selection,
+                                    // act on just that row (standard Finder behavior).
+                                    if !selection.contains(row.session.id!) { selection = [row.session.id!] }
+                                    confirmingDelete = true
+                                }
                             }
                         }
-                        Text("\(row.session.roundType.displayName) · \(row.session.date.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    .tag(row.session.id!)
-                    .contextMenu {
-                        Button("Delete", role: .destructive) {
-                            // If the right-clicked row isn't in the current multi-selection,
-                            // act on just that row (standard Finder behavior).
-                            if !selection.contains(row.session.id!) { selection = [row.session.id!] }
-                            confirmingDelete = true
-                        }
+                    .onDeleteCommand { if !selection.isEmpty { confirmingDelete = true } }
+                    .confirmationDialog(deleteTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
+                        Button("Delete", role: .destructive, action: deleteSelected)
+                        Button("Cancel", role: .cancel) {}
                     }
                 }
             }
             .frame(minWidth: 260, maxWidth: 340)
-            .onDeleteCommand { if !selection.isEmpty { confirmingDelete = true } }
-            .confirmationDialog(deleteTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
-                Button("Delete", role: .destructive, action: deleteSelected)
-                Button("Cancel", role: .cancel) {}
-            }
 
             if selection.count == 1, let id = selection.first {
                 SessionDetailView(sessionId: id, onRenamed: reload).id(id)
@@ -148,7 +167,7 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 4) {
                     TextField("Title", text: $companyName)
-                        .textFieldStyle(.plain)
+                        .textFieldStyle(.roundedBorder)
                         .onSubmit { commitRename(d) }
                     Text("— \(d.session.roundType.displayName)").foregroundStyle(.secondary)
                 }
@@ -165,6 +184,10 @@ struct SessionDetailView: View {
                             .onChange(of: criteria) { commitCriteria() }  // durable: survives quit without a click
                         if let regenerateError {
                             Text(regenerateError).font(.caption).foregroundStyle(.red)
+                        }
+                        if d.session.coachingStatus == .failed && d.feedback == nil {
+                            Label("Last debrief failed — press Generate to retry.", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
                         }
                         HStack {
                             Text("Paste a rubric or focus for this interview. Applied when you (re)generate the debrief.")
