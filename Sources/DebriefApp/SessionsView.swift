@@ -98,22 +98,20 @@ struct SessionDetailView: View {
 
     private func commitRename(_ d: SessionDetail) {
         let trimmed = companyName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let id = d.company.id, !trimmed.isEmpty, trimmed != d.company.name else {
+        guard !trimmed.isEmpty, trimmed != d.company.name else {
             companyName = d.company.name
             return
         }
         do {
-            try env.db.updateCompanyName(id: id, name: trimmed)
-            var renamedCompany = d.company
-            renamedCompany.name = trimmed
-            detail = SessionDetail(session: d.session, company: renamedCompany,
+            let company = try env.db.renameSession(id: sessionId, companyNamed: trimmed)
+            detail = SessionDetail(session: d.session, company: company,
                                     segments: d.segments, feedback: d.feedback, tags: d.tags)
-            companyName = trimmed
+            companyName = company.name
             renameError = nil
             onRenamed?()
         } catch {
             companyName = d.company.name
-            renameError = "\"\(trimmed)\" is already in use by another session."
+            renameError = "Couldn’t rename: \(error.localizedDescription)"
         }
     }
 
