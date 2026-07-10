@@ -66,9 +66,19 @@ final class AppEnvironment: ObservableObject {
         UserDefaults.standard.string(forKey: "coachingModel") ?? AnthropicClient.defaultModel
     }
 
+    static func resolveLLM() -> CoachingLLM {
+        let d = UserDefaults.standard
+        guard d.string(forKey: "coachingProvider") == "openai_compat" else {
+            return AnthropicClient(apiKey: resolveAPIKey(), model: resolveModel())
+        }
+        let url = URL(string: d.string(forKey: "openAICompatBaseURL") ?? "") ?? URL(string: "http://localhost:11434/v1")!
+        return OpenAICompatibleClient(baseURL: url,
+                                      model: d.string(forKey: "openAICompatModel") ?? "",
+                                      apiKey: KeychainStore.read(key: "openai-compat-api-key") ?? "")
+    }
+
     func rebuildCoaching() {
-        coaching = CoachingService(db: db, prompts: prompts,
-                                   llm: AnthropicClient(apiKey: Self.resolveAPIKey(), model: Self.resolveModel()))
+        coaching = CoachingService(db: db, prompts: prompts, llm: Self.resolveLLM())
         coordinator.coaching = coaching
     }
 
@@ -78,9 +88,7 @@ final class AppEnvironment: ObservableObject {
             let db = try AppDatabase.onDisk(at: root.appendingPathComponent("db/debrief.sqlite"))
             let prompts = PromptStore(directory: PromptStore.defaultDirectory())
             try prompts.ensureDefaults()
-            let apiKey = resolveAPIKey()
-            let coaching = CoachingService(db: db, prompts: prompts,
-                                           llm: AnthropicClient(apiKey: apiKey, model: resolveModel()))
+            let coaching = CoachingService(db: db, prompts: prompts, llm: resolveLLM())
             let keepAudio = UserDefaults.standard.bool(forKey: "keepAudioAfterTranscription")
             let coordinator = RecordingCoordinator(
                 db: db, coaching: coaching,

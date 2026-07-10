@@ -9,6 +9,10 @@ struct SettingsView: View {
     @AppStorage("keepAudioAfterTranscription") private var keepAudio = false
     @State private var retryResult: String?
     @AppStorage("coachingModel") private var model = AnthropicClient.defaultModel
+    @AppStorage("coachingProvider") private var provider = "anthropic"
+    @AppStorage("openAICompatBaseURL") private var compatBaseURL = "http://localhost:11434/v1"
+    @AppStorage("openAICompatModel") private var compatModel = ""
+    @State private var compatKey = KeychainStore.read(key: "openai-compat-api-key") ?? ""
 
     private let modelOptions: [(label: String, id: String)] = [
         ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),
@@ -22,41 +26,72 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Claude API") {
-                if apiKey.isEmpty && !envAPIKeyPresent {
-                    Label("No API key configured — debriefs will not run.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                } else if apiKey.isEmpty && envAPIKeyPresent {
-                    Text("Using ANTHROPIC_API_KEY from environment.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Section("Coaching model") {
+                Picker("Provider", selection: $provider) {
+                    Text("Claude API (recommended)").tag("anthropic")
+                    Text("Local / OpenAI-compatible").tag("openai_compat")
                 }
-                SecureField("API key (sk-ant-…)", text: $apiKey)
-                HStack {
-                    Button("Save") {
+                .onChange(of: provider) { env.rebuildCoaching() }
+
+                if provider == "anthropic" {
+                    if apiKey.isEmpty && !envAPIKeyPresent {
+                        Label("No API key configured — debriefs will not run.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    } else if apiKey.isEmpty && envAPIKeyPresent {
+                        Text("Using ANTHROPIC_API_KEY from environment.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    SecureField("API key (sk-ant-…)", text: $apiKey)
+                    HStack {
+                        Button("Save") {
+                            do {
+                                if apiKey.isEmpty {
+                                    try KeychainStore.delete(key: "anthropic-api-key")
+                                } else {
+                                    try KeychainStore.save(key: "anthropic-api-key", value: apiKey)
+                                }
+                                env.rebuildCoaching()
+                                saved = true
+                                saveError = nil
+                            } catch {
+                                saveError = "Could not save key: \(error.localizedDescription)"
+                                saved = false
+                            }
+                        }.disabled(!apiKey.isEmpty && !apiKey.hasPrefix("sk-ant-"))
+                        if saved { Text("Saved ✓").foregroundStyle(.green) }
+                        if let saveError { Text(saveError).foregroundStyle(.red) }
+                    }
+                    Picker("Model", selection: $model) {
+                        ForEach(modelOptions, id: \.id) { Text($0.label).tag($0.id) }
+                    }
+                    .onChange(of: model) { env.rebuildCoaching() }
+                    Text("Which Claude model generates debriefs. Applies to the next (re)generate.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    TextField("Base URL", text: $compatBaseURL, prompt: Text("http://localhost:11434/v1"))
+                        .onChange(of: compatBaseURL) { env.rebuildCoaching() }
+                    TextField("Model", text: $compatModel, prompt: Text("e.g. deepseek-r1:14b"))
+                        .onChange(of: compatModel) { env.rebuildCoaching() }
+                    SecureField("API key (optional, for remote providers)", text: $compatKey)
+                    Button("Save key") {
                         do {
-                            if apiKey.isEmpty {
-                                try KeychainStore.delete(key: "anthropic-api-key")
+                            if compatKey.isEmpty {
+                                try KeychainStore.delete(key: "openai-compat-api-key")
                             } else {
-                                try KeychainStore.save(key: "anthropic-api-key", value: apiKey)
+                                try KeychainStore.save(key: "openai-compat-api-key", value: compatKey)
                             }
                             env.rebuildCoaching()
-                            saved = true
-                            saveError = nil
+                            saved = true; saveError = nil
                         } catch {
-                            saveError = "Could not save key: \(error.localizedDescription)"
-                            saved = false
+                            saveError = "Could not save key: \(error.localizedDescription)"; saved = false
                         }
-                    }.disabled(!apiKey.isEmpty && !apiKey.hasPrefix("sk-ant-"))
+                    }
                     if saved { Text("Saved ✓").foregroundStyle(.green) }
                     if let saveError { Text(saveError).foregroundStyle(.red) }
+                    Text("Works with Ollama, LM Studio, or any /v1/chat/completions server. See docs/local-llm.md for setup. Local models give weaker coaching than Claude.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Picker("Model", selection: $model) {
-                    ForEach(modelOptions, id: \.id) { Text($0.label).tag($0.id) }
-                }
-                .onChange(of: model) { env.rebuildCoaching() }
-                Text("Which Claude model generates debriefs. Applies to the next (re)generate.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Audio") {
                 Toggle("Keep raw audio after transcription", isOn: $keepAudio)

@@ -29,14 +29,25 @@ public struct PromptStore: Sendable {
         }
     }
 
-    // Temporary until file-based discovery lands: builtins only.
-    public func availableRoundTypes() -> [RoundType] { RoundType.builtins }
+    /// Every overlay file in the prompts directory is a selectable round type.
+    /// Builtins first (stable order), then custom files alphabetically.
+    public func availableRoundTypes() -> [RoundType] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        let types = files.filter { $0.pathExtension == "md" }
+            .map { RoundType(rawValue: $0.deletingPathExtension().lastPathComponent) }
+            .filter { $0.rawValue != "base" }
+        let customs = types.filter { !RoundType.builtins.contains($0) }.sorted { $0.rawValue < $1.rawValue }
+        return RoundType.builtins.filter(types.contains) + customs
+    }
 
     public func assembleSystemPrompt(roundType: RoundType,
                                      historyTags: [(tag: String, count: Int)],
                                      customInstructions: String = "") throws -> String {
         let base = try String(contentsOf: directory.appendingPathComponent("base.md"), encoding: .utf8)
-        let overlay = try String(contentsOf: directory.appendingPathComponent("\(roundType.rawValue).md"), encoding: .utf8)
+        // Missing overlay (user deleted a custom type's file) must not fail the
+        // debrief — coach from the base rubric alone.
+        let overlay = (try? String(contentsOf: directory.appendingPathComponent("\(roundType.rawValue).md"),
+                                   encoding: .utf8)) ?? ""
         let history: String
         if historyTags.isEmpty {
             history = "## Prior session history\n\nNo prior session history."
@@ -44,7 +55,7 @@ public struct PromptStore: Sendable {
             let lines = historyTags.map { "- \($0.tag) (x\($0.count))" }.joined(separator: "\n")
             history = "## Prior session history\n\nRecurring weakness tags from this candidate's recent interviews:\n\(lines)"
         }
-        var sections = [base, overlay, history]
+        var sections = overlay.isEmpty ? [base, history] : [base, overlay, history]
         let trimmed = customInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             sections.append("""

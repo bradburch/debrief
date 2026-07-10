@@ -23,3 +23,5 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
 9. **Audio deletion**: with "Keep raw audio" off, confirm
    `~/Library/Application Support/Debrief/recordings/` is empty after a successful debrief.
 - [ ] Open a session, paste text into "Grading criteria for this interview", click Regenerate; the new debrief reflects the criteria. Reopen the session — the criteria text is still there.
+- [ ] Settings → provider "Local / OpenAI-compatible" + running Ollama: debrief completes; stop Ollama: session marks failed, retry works after restart
+- [ ] Drop `take_home_review.md` into the prompts folder: "Take Home Review" appears in the round picker; delete the file: existing sessions of that type still debrief (base rubric only)

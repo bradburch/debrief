@@ -48,7 +48,7 @@ launch.
 
 - macOS 14 or later (Apple Silicon recommended — transcription uses CoreML/Metal)
 - Full Xcode installed (the build needs XCTest, which the Command Line Tools alone don't ship)
-- A Claude API key (for the coaching step; transcription is free and local)
+- A Claude API key for the coaching step (transcription is free and local) — or run coaching fully offline against a local model; see [docs/local-llm.md](docs/local-llm.md)
 
 ## Build & run
 

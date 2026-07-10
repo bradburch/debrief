@@ -61,4 +61,27 @@ final class PromptStoreTests: XCTestCase {
             roundType: .behavioral, historyTags: [], customInstructions: "   \n  ")
         XCTAssertFalse(prompt.contains("Criteria for THIS interview"))
     }
+
+    func testAvailableRoundTypesDiscoversFilesBuiltinsFirst() throws {
+        try store.ensureDefaults()
+        try "custom".write(to: dir.appendingPathComponent("take_home_review.md"), atomically: true, encoding: .utf8)
+        try "custom".write(to: dir.appendingPathComponent("bar_raiser.md"), atomically: true, encoding: .utf8)
+        try "not a prompt".write(to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(store.availableRoundTypes(), [
+            .recruiterScreen, .behavioral, .technical, .systemDesign,       // builtins, fixed order
+            RoundType(rawValue: "bar_raiser"), RoundType(rawValue: "take_home_review"),  // customs, alphabetical
+        ])  // base.md excluded, non-.md files excluded
+    }
+
+    func testAvailableRoundTypesEmptyDirectory() {
+        XCTAssertEqual(store.availableRoundTypes(), [])
+    }
+
+    func testAssembleFallsBackToBaseWhenOverlayMissing() throws {
+        try store.ensureDefaults()
+        let prompt = try store.assembleSystemPrompt(
+            roundType: RoundType(rawValue: "deleted_custom_type"), historyTags: [])
+        XCTAssertTrue(prompt.contains("weakness_tags"))          // base rubric present
+        XCTAssertTrue(prompt.contains("No prior session history"))
+    }
 }

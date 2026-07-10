@@ -42,4 +42,23 @@ final class AppEnvironmentTests: XCTestCase {
             fired,
             "AppEnvironment.objectWillChange should fire when the nested coordinator's @Published phase changes")
     }
+
+    func testResolveLLMDispatchesOnProvider() {
+        let d = UserDefaults.standard
+        defer {
+            d.removeObject(forKey: "coachingProvider")
+            d.removeObject(forKey: "openAICompatBaseURL")
+            d.removeObject(forKey: "openAICompatModel")
+        }
+        d.set("openai_compat", forKey: "coachingProvider")
+        d.set("http://localhost:1234/v1", forKey: "openAICompatBaseURL")
+        d.set("qwen2.5:14b", forKey: "openAICompatModel")
+        XCTAssertTrue(AppEnvironment.resolveLLM() is OpenAICompatibleClient)
+
+        d.set("anthropic", forKey: "coachingProvider")
+        XCTAssertTrue(AppEnvironment.resolveLLM() is AnthropicClient)
+
+        d.removeObject(forKey: "coachingProvider")  // default: anthropic
+        XCTAssertTrue(AppEnvironment.resolveLLM() is AnthropicClient)
+    }
 }
