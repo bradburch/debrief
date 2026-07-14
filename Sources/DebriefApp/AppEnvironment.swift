@@ -26,6 +26,14 @@ final class AppEnvironment: ObservableObject {
 
     func clearRecordMetadata() { recordCompany = ""; recordNotes = "" }
 
+    /// Single stop path shared by the two Stop buttons and call-end auto-stop.
+    func stopAndDebrief() async {
+        let name = recordCompany.isEmpty ? "Unknown" : recordCompany
+        _ = await coordinator.stopAndFinalize(
+            metadata: .init(company: name, roundType: recordRoundType, notes: recordNotes))
+        clearRecordMetadata()
+    }
+
     private var detector = CallDetector()
     private var detectTimer: Timer?
     private var healthTimer: Timer?
@@ -104,21 +112,24 @@ final class AppEnvironment: ObservableObject {
 
     private func startTimers() {
         detectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollDetection() }
+            Task { @MainActor in await self?.pollDetection(DetectionProbes.snapshot(), at: Date()) }
         }
         healthTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.coordinator.checkStreamHealth(now: Date()) }
         }
     }
 
-    private func pollDetection() {
-        guard case .idle = coordinator.phase else { return }
-        // While recording we hold the mic ourselves, so only poll when idle.
-        if let event = detector.ingest(DetectionProbes.snapshot(), at: Date()) {
-            switch event {
-            case .callLikelyStarted: callDetected = true
-            case .callLikelyEnded: callDetected = false
-            }
+    /// Polls in every phase: the mic probe excludes our own capture, so detection
+    /// stays meaningful while recording — that's what lets a call ending end the
+    /// recording. Internal + parameterized so tests can inject snapshots/clock.
+    func pollDetection(_ snapshot: DetectionSnapshot, at now: Date) async {
+        guard let event = detector.ingest(snapshot, at: now) else { return }
+        switch event {
+        case .callLikelyStarted:
+            callDetected = true
+        case .callLikelyEnded:
+            callDetected = false
+            if case .recording = coordinator.phase { await stopAndDebrief() }
         }
     }
 }

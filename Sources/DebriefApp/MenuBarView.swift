@@ -44,12 +44,7 @@ struct MenuBarView: View {
                 }
                 TextField("Notes (optional)", text: $env.recordNotes)
                 Button("Stop & Debrief") {
-                    Task {
-                        let name = env.recordCompany.isEmpty ? "Unknown" : env.recordCompany
-                        _ = await env.coordinator.stopAndFinalize(
-                            metadata: .init(company: name, roundType: env.recordRoundType, notes: env.recordNotes))
-                        env.clearRecordMetadata()
-                    }
+                    Task { await env.stopAndDebrief() }
                 }
             case .finalizing(let status):
                 HStack { ProgressView().controlSize(.small); Text(status) }
