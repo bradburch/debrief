@@ -10,10 +10,17 @@ import CoachingEngine
 // SwiftUI views observing AppEnvironment never see coordinator's own
 // @Published changes (phase, micLevel, systemLevel, streamWarning) unless
 // AppEnvironment forwards coordinator.objectWillChange into its own.
+final class FakeAlerts: CallAlerting {
+    var detectedCount = 0
+    var clearCount = 0
+    func callDetected() { detectedCount += 1 }
+    func clear() { clearCount += 1 }
+}
+
 @MainActor
 final class AppEnvironmentTests: XCTestCase {
     /// Coordinator + env built exactly the way RecordingCoordinatorTests.makeCoordinator does.
-    func makeEnv(db: AppDatabase) throws -> AppEnvironment {
+    func makeEnv(db: AppDatabase, alerts: CallAlerting? = nil) throws -> AppEnvironment {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -28,7 +35,7 @@ final class AppEnvironmentTests: XCTestCase {
             makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 2) },
             recordingsRoot: root,
             chunkDuration: 1.0)
-        return AppEnvironment(db: db, prompts: prompts, coaching: coaching, coordinator: coordinator)
+        return AppEnvironment(db: db, prompts: prompts, coaching: coaching, coordinator: coordinator, alerts: alerts)
     }
 
     func testCoordinatorPhaseChangeForwardsToEnvironmentObjectWillChange() async throws {
@@ -94,5 +101,22 @@ final class AppEnvironmentTests: XCTestCase {
 
         d.removeObject(forKey: "coachingProvider")  // default: anthropic
         XCTAssertTrue(AppEnvironment.resolveLLM() is AnthropicClient)
+    }
+
+    func testCallStartPostsAlertAndCallEndClearsIt() async throws {
+        let db = try AppDatabase.inMemory()
+        let alerts = FakeAlerts()
+        let env = try makeEnv(db: db, alerts: alerts)
+        let t0 = Date()
+
+        // Call starts while idle → alert posted.
+        await env.pollDetection(.init(micInUse: true, meetingAppRunning: true), at: t0)
+        XCTAssertEqual(alerts.detectedCount, 1)
+        XCTAssertEqual(alerts.clearCount, 0)
+
+        // Call ends (mic free past the 10s confirmation) → alert cleared.
+        await env.pollDetection(.init(micInUse: false, meetingAppRunning: true), at: t0.addingTimeInterval(60))
+        await env.pollDetection(.init(micInUse: false, meetingAppRunning: true), at: t0.addingTimeInterval(71))
+        XCTAssertEqual(alerts.clearCount, 1)
     }
 }

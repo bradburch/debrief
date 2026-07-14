@@ -34,16 +34,18 @@ final class AppEnvironment: ObservableObject {
         clearRecordMetadata()
     }
 
+    private let alerts: CallAlerting?
     private var detector = CallDetector()
     private var detectTimer: Timer?
     private var healthTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
-    init(db: AppDatabase, prompts: PromptStore, coaching: CoachingService, coordinator: RecordingCoordinator) {
+    init(db: AppDatabase, prompts: PromptStore, coaching: CoachingService, coordinator: RecordingCoordinator, alerts: CallAlerting? = nil) {
         self.db = db
         self.prompts = prompts
         self.coaching = coaching
         self.coordinator = coordinator
+        self.alerts = alerts
         // coordinator is a nested ObservableObject (a plain `let`, not @Published),
         // so its own @Published changes (phase, micLevel, systemLevel, streamWarning)
         // don't propagate to views observing AppEnvironment unless forwarded here.
@@ -127,8 +129,10 @@ final class AppEnvironment: ObservableObject {
         switch event {
         case .callLikelyStarted:
             callDetected = true
+            if case .idle = coordinator.phase { alerts?.callDetected() }
         case .callLikelyEnded:
             callDetected = false
+            alerts?.clear()
             if case .recording = coordinator.phase { await stopAndDebrief() }
         }
     }
