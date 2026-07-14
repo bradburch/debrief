@@ -60,7 +60,7 @@ struct RecordingBar: View {
                     }
                     Spacer()
                     Button {
-                        Task { await env.coordinator.startRecording() }
+                        Task { await env.startRecording() }
                     } label: {
                         Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
                     }

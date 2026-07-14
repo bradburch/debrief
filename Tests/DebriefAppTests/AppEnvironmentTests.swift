@@ -119,4 +119,19 @@ final class AppEnvironmentTests: XCTestCase {
         await env.pollDetection(.init(micInUse: false, meetingAppRunning: true), at: t0.addingTimeInterval(71))
         XCTAssertEqual(alerts.clearCount, 1)
     }
+
+    func testStartRecordingClearsDeliveredAlert() async throws {
+        let db = try AppDatabase.inMemory()
+        let alerts = FakeAlerts()
+        let env = try makeEnv(db: db, alerts: alerts)
+
+        await env.pollDetection(.init(micInUse: true, meetingAppRunning: true), at: Date())
+        XCTAssertEqual(alerts.detectedCount, 1)
+
+        await env.startRecording()
+        XCTAssertEqual(alerts.clearCount, 1, "starting a recording should clear the call-detected notification")
+        guard case .recording = env.coordinator.phase else {
+            return XCTFail("startRecording() should start the coordinator, got \(env.coordinator.phase)")
+        }
+    }
 }

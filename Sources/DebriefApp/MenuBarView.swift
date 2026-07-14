@@ -19,7 +19,7 @@ struct MenuBarView: View {
                     Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
                 }
                 Button {
-                    Task { await env.coordinator.startRecording() }
+                    Task { await env.startRecording() }
                 } label: {
                     Label(env.callDetected ? "Record this call" : "Start recording",
                           systemImage: "record.circle")

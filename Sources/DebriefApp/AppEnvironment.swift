@@ -34,6 +34,14 @@ final class AppEnvironment: ObservableObject {
         clearRecordMetadata()
     }
 
+    /// Single start path shared by the two Record buttons and the notification's
+    /// Record action; clears the call-detected notification so it can't be
+    /// clicked again mid-recording.
+    func startRecording() async {
+        alerts?.clear()
+        await coordinator.startRecording()
+    }
+
     private let alerts: CallAlerting?
     private var detector = CallDetector()
     private var detectTimer: Timer?
