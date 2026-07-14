@@ -54,7 +54,7 @@ When a call is detected, the menu-bar icon pulses and a notification offers one-
 
 Both streams are flushed to disk as `.wav` chunks **during** capture so a crash loses nothing. **Invariant: audio chunks land on disk first; everything downstream (transcription, coaching) is re-derivable from them.** Raw audio is deleted after successful transcription (default; configurable).
 
-Permissions required: Microphone, Screen Recording. Nothing else. The OS prompts for each on first use; Settings has deep-links to both System Settings panes.
+Permissions required: Microphone, Screen Recording, and Notifications (for the call-detected Record pop-up; the app works without it). The OS prompts for each on first use; Settings has deep-links to the Microphone and Screen Recording panes.
 
 ## Transcription
 

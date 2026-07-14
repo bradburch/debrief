@@ -60,7 +60,7 @@ struct RecordingBar: View {
                     }
                     Spacer()
                     Button {
-                        Task { await env.coordinator.startRecording() }
+                        Task { await env.startRecording() }
                     } label: {
                         Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
                     }
@@ -89,12 +89,7 @@ struct RecordingBar: View {
                     }.frame(maxWidth: 220)
                     TextField("Notes (optional)", text: $env.recordNotes)
                     Button("Stop & Debrief") {
-                        Task {
-                            let name = env.recordCompany.isEmpty ? "Unknown" : env.recordCompany
-                            _ = await env.coordinator.stopAndFinalize(
-                                metadata: .init(company: name, roundType: env.recordRoundType, notes: env.recordNotes))
-                            env.clearRecordMetadata()
-                        }
+                        Task { await env.stopAndDebrief() }
                     }
                 }
             case .finalizing(let status):
