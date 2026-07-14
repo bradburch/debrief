@@ -17,7 +17,9 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
 5. **Auto-stop on call end**: while recording a detected call, leave the meeting (close the
    tab / hang up) without touching Debrief. Within ~15s the recording stops and finalizes
    on its own. Conversely, staying in the call must NOT auto-stop (the per-process mic
-   probe must not count Debrief's own capture).
+   probe must not count Debrief's own capture). Metadata typed into the stop form after
+   hanging up may be cut short by auto-stop (~10-15s window); sessions can be renamed
+   afterwards.
 6. **Stop & Debrief**: fill Company/Round, click Stop & Debrief. Phase shows Transcribing →
    Saving → Coaching, then idle. Session appears in the main window with a transcript where
    your words are YOU and theirs are THEM, with sane timestamps.
@@ -28,7 +30,7 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
 9. **Crash recovery**: start a recording, `kill -9` the Debrief process mid-call, relaunch.
    The popover offers recovery; recovering produces a session from the partial audio.
 10. **Audio deletion**: with "Keep raw audio" off, confirm
-   `~/Library/Application Support/Debrief/recordings/` is empty after a successful debrief.
+    `~/Library/Application Support/Debrief/recordings/` is empty after a successful debrief.
 - [ ] Open a session, paste text into "Grading criteria for this interview", click Regenerate; the new debrief reflects the criteria. Reopen the session — the criteria text is still there.
 - [ ] Settings → provider "Local / OpenAI-compatible" + running Ollama: debrief completes; stop Ollama: session marks failed, retry works after restart
 - [ ] Drop `take_home_review.md` into the prompts folder: "Take Home Review" appears in the round picker; delete the file: existing sessions of that type still debrief (base rubric only)

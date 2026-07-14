@@ -28,6 +28,8 @@ final class CallAlerts: NSObject, CallAlerting, UNUserNotificationCenterDelegate
             UNNotificationCategory(identifier: Self.categoryID, actions: [record],
                                    intentIdentifiers: [], options: []),
         ])
+        // ponytail: result deliberately discarded — a denied permission just degrades to
+        // "no notification pop-up"; the menu-bar icon/label still show call state.
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 

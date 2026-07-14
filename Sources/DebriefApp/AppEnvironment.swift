@@ -114,6 +114,9 @@ final class AppEnvironment: ObservableObject {
                 makeMicRecorder: { MicRecorder(writer: $0) },
                 makeSystemRecorder: { SystemAudioRecorder(writer: $0) },
                 deleteAudioOnSuccess: !keepAudio)
+            // Constructing CallAlerts touches UNUserNotificationCenter, which traps when
+            // run as an unbundled binary (`swift run`) — launch via the bundled
+            // Debrief.app (scripts/make-app.sh) instead.
             let alerts = CallAlerts()
             let env = AppEnvironment(db: db, prompts: prompts, coaching: coaching,
                                      coordinator: coordinator, alerts: alerts)
@@ -144,6 +147,8 @@ final class AppEnvironment: ObservableObject {
         switch event {
         case .callLikelyStarted:
             callDetected = true
+            // Known gap: a call that starts during .finalizing never re-fires the alert
+            // once idle (the detector is already inCall); the menu-bar icon still shows it.
             if case .idle = coordinator.phase { alerts?.callDetected() }
         case .callLikelyEnded:
             callDetected = false

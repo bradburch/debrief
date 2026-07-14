@@ -134,4 +134,16 @@ final class AppEnvironmentTests: XCTestCase {
             return XCTFail("startRecording() should start the coordinator, got \(env.coordinator.phase)")
         }
     }
+
+    func testCallStartWhileRecordingDoesNotPostAlert() async throws {
+        let db = try AppDatabase.inMemory()
+        let alerts = FakeAlerts()
+        let env = try makeEnv(db: db, alerts: alerts)
+
+        await env.coordinator.startRecording()  // bypass the wrapper so clearCount stays 0
+        await env.pollDetection(.init(micInUse: true, meetingAppRunning: true), at: Date())
+
+        XCTAssertTrue(env.callDetected)
+        XCTAssertEqual(alerts.detectedCount, 0, "no Record pop-up while already recording")
+    }
 }
