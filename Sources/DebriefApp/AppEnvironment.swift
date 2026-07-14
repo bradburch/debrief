@@ -114,7 +114,14 @@ final class AppEnvironment: ObservableObject {
                 makeMicRecorder: { MicRecorder(writer: $0) },
                 makeSystemRecorder: { SystemAudioRecorder(writer: $0) },
                 deleteAudioOnSuccess: !keepAudio)
-            return AppEnvironment(db: db, prompts: prompts, coaching: coaching, coordinator: coordinator)
+            let alerts = CallAlerts()
+            let env = AppEnvironment(db: db, prompts: prompts, coaching: coaching,
+                                     coordinator: coordinator, alerts: alerts)
+            alerts.onRecord = { [weak env] in
+                guard let env else { return }
+                Task { await env.startRecording() }
+            }
+            return env
         } catch {
             fatalError("Debrief could not start: \(error)")
         }

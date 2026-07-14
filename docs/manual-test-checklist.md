@@ -2,10 +2,13 @@
 
 Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-app.sh && open Debrief.app`.
 
-1. **Permissions**: first launch prompts for Microphone; starting a recording prompts for
-   Screen Recording (grant in System Settings, relaunch).
+1. **Permissions**: first launch prompts for Microphone and Notifications; starting a
+   recording prompts for Screen Recording (grant in System Settings, relaunch).
 2. **Detection**: start a test meeting (meet.google.com in a browser, mic on). Within ~15s
-   the menu-bar icon becomes a phone and the popover shows "Call detected".
+   the menu-bar icon becomes a phone, the popover shows "Call detected", and a
+   notification pops up (first run: grant the notification permission prompt). Clicking
+   the notification's **Record** button starts recording; clicking the notification body
+   does NOT. Leaving the meeting without recording clears the notification.
 3. **Recording**: click Record. Speak; confirm the "You" level bar moves. Have the other
    side speak (or play audio); confirm the "Them" bar moves. Both bars moving = both
    streams healthy.
