@@ -39,4 +39,21 @@ final class CallDetectorTests: XCTestCase {
                        .callLikelyEnded)
         XCTAssertFalse(d.inCall)
     }
+
+    // Start uses the short window; end uses the (longer) endConfirmation independently, so a
+    // transient mic-free blip shorter than endConfirmation must NOT end an active call.
+    func testStartAndEndUseSeparateConfirmationWindows() {
+        var d = CallDetector(confirmation: 5, endConfirmation: 10)
+        // Browser-only start: fires at 5s (short window), not 10s.
+        XCTAssertNil(d.ingest(.init(micInUse: true, meetingAppRunning: false), at: t0))
+        XCTAssertEqual(d.ingest(.init(micInUse: true, meetingAppRunning: false), at: t0.addingTimeInterval(5)),
+                       .callLikelyStarted)
+        // A 7s mic-free blip (> start window, < end window) must not end the call.
+        XCTAssertNil(d.ingest(.init(micInUse: false, meetingAppRunning: false), at: t0.addingTimeInterval(10)))
+        XCTAssertNil(d.ingest(.init(micInUse: false, meetingAppRunning: false), at: t0.addingTimeInterval(17)))
+        XCTAssertTrue(d.inCall, "a blip shorter than endConfirmation should not truncate the call")
+        // Mic comes back — still in call, window resets.
+        XCTAssertNil(d.ingest(.init(micInUse: true, meetingAppRunning: false), at: t0.addingTimeInterval(18)))
+        XCTAssertTrue(d.inCall)
+    }
 }
