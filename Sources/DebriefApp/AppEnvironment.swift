@@ -43,10 +43,11 @@ final class AppEnvironment: ObservableObject {
     }
 
     private let alerts: CallAlerting?
-    // 5s confirmation (was 10) so a browser-tab Meet — which has no meeting-app signal to
-    // skip the window — is detected in ~6-8s instead of ~20s. Also shortens call-end
-    // auto-stop. Zoom/Teams still fire instantly (meeting app skips the window entirely).
-    private var detector = CallDetector(confirmation: 5)
+    // 5s start confirmation (was 10) so a browser-tab Meet — which has no meeting-app signal
+    // to skip the window — alerts in ~6-8s instead of ~20s. End confirmation stays at 10s:
+    // it's the tolerance for a transient mic-free blip mid-call, and firing early would
+    // truncate the recording. Zoom/Teams still start instantly (meeting app skips the window).
+    private var detector = CallDetector(confirmation: 5, endConfirmation: 10)
     private var detectTimer: Timer?
     private var healthTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
@@ -101,7 +102,14 @@ final class AppEnvironment: ObservableObject {
                                       apiKey: KeychainStore.read(key: "openai-compat-api-key") ?? "")
     }
 
-    func rebuildCoaching() { applyLLM(Self.resolveLLM()) }
+    /// Resolve off the main thread — resolveLLM() reads the API key from the Keychain, which
+    /// can block on the auth dialog; doing it on the main actor would hang the Settings UI.
+    func rebuildCoaching() {
+        Task.detached { [self] in
+            let llm = Self.resolveLLM()
+            await MainActor.run { self.applyLLM(llm) }
+        }
+    }
 
     /// Swaps in a resolved coaching LLM. Kept separate from resolution so the initial
     /// (Keychain-reading) resolution can happen off the main thread — see live().
@@ -152,7 +160,10 @@ final class AppEnvironment: ObservableObject {
 
     private func startTimers() {
         detectTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.pollDetection(DetectionProbes.snapshot(), at: Date()) }
+            // Compute the snapshot off the main actor — micInUseByOtherProcess enumerates
+            // every CoreAudio process object, too heavy to run on the UI thread every 3s.
+            // Only pollDetection (which touches the coordinator) needs the main actor.
+            Task { let snapshot = DetectionProbes.snapshot(); await self?.pollDetection(snapshot, at: Date()) }
         }
         healthTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.coordinator.checkStreamHealth(now: Date()) }
