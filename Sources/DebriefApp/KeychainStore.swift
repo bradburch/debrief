@@ -7,22 +7,19 @@ enum KeychainStore {
     enum KeychainError: Error { case status(OSStatus) }
 
     static func save(key: String, value: String) throws {
-        let data = Data(value.utf8)
+        // Delete any existing item first, then add fresh. A plain SecItemUpdate rewrites the
+        // data but keeps the old access-control list, so a key first saved by an earlier or
+        // differently-signed build keeps prompting for the keychain password on every read.
+        // Re-adding recreates the ACL trusting the current (stable-signed) app → no prompts.
+        try? delete(key: key)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
+            kSecValueData as String: Data(value.utf8),
         ]
-        let update: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = query
-            add[kSecValueData as String] = data
-            let addStatus = SecItemAdd(add as CFDictionary, nil)
-            guard addStatus == errSecSuccess else { throw KeychainError.status(addStatus) }
-        } else {
-            guard status == errSecSuccess else { throw KeychainError.status(status) }
-        }
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.status(status) }
     }
 
     static func read(key: String) -> String? {

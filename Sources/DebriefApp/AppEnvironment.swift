@@ -43,7 +43,10 @@ final class AppEnvironment: ObservableObject {
     }
 
     private let alerts: CallAlerting?
-    private var detector = CallDetector()
+    // 5s confirmation (was 10) so a browser-tab Meet — which has no meeting-app signal to
+    // skip the window — is detected in ~6-8s instead of ~20s. Also shortens call-end
+    // auto-stop. Zoom/Teams still fire instantly (meeting app skips the window entirely).
+    private var detector = CallDetector(confirmation: 5)
     private var detectTimer: Timer?
     private var healthTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
@@ -75,16 +78,19 @@ final class AppEnvironment: ObservableObject {
         recoverableSessions = RecordingStore.unfinalizedSessions()
     }
 
-    static func resolveAPIKey() -> String {
+    // nonisolated so the Keychain read can run off the main thread — a synchronous
+    // SecItemCopyMatching can block on the keychain-auth dialog and must never do so
+    // on the launch main thread (it would hang the whole app before detection starts).
+    nonisolated static func resolveAPIKey() -> String {
         KeychainStore.read(key: anthropicKeychainKey)
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? ""
     }
 
-    static func resolveModel() -> String {
+    nonisolated static func resolveModel() -> String {
         UserDefaults.standard.string(forKey: "coachingModel") ?? AnthropicClient.defaultModel
     }
 
-    static func resolveLLM() -> CoachingLLM {
+    nonisolated static func resolveLLM() -> CoachingLLM {
         let d = UserDefaults.standard
         guard d.string(forKey: "coachingProvider") == "openai_compat" else {
             return AnthropicClient(apiKey: resolveAPIKey(), model: resolveModel())
@@ -95,8 +101,12 @@ final class AppEnvironment: ObservableObject {
                                       apiKey: KeychainStore.read(key: "openai-compat-api-key") ?? "")
     }
 
-    func rebuildCoaching() {
-        coaching = CoachingService(db: db, prompts: prompts, llm: Self.resolveLLM())
+    func rebuildCoaching() { applyLLM(Self.resolveLLM()) }
+
+    /// Swaps in a resolved coaching LLM. Kept separate from resolution so the initial
+    /// (Keychain-reading) resolution can happen off the main thread — see live().
+    func applyLLM(_ llm: CoachingLLM) {
+        coaching = CoachingService(db: db, prompts: prompts, llm: llm)
         coordinator.coaching = coaching
     }
 
@@ -106,7 +116,11 @@ final class AppEnvironment: ObservableObject {
             let db = try AppDatabase.onDisk(at: root.appendingPathComponent("db/debrief.sqlite"))
             let prompts = PromptStore(directory: PromptStore.defaultDirectory())
             try prompts.ensureDefaults()
-            let coaching = CoachingService(db: db, prompts: prompts, llm: resolveLLM())
+            // Start with a no-Keychain client; the real LLM is resolved off-main below so a
+            // keychain-auth prompt can't hang launch. Coaching only runs long after launch
+            // (post-finalize), by which point the real client has been swapped in.
+            let coaching = CoachingService(db: db, prompts: prompts,
+                                           llm: AnthropicClient(apiKey: "", model: resolveModel()))
             let keepAudio = UserDefaults.standard.bool(forKey: "keepAudioAfterTranscription")
             let coordinator = RecordingCoordinator(
                 db: db, coaching: coaching,
@@ -124,6 +138,12 @@ final class AppEnvironment: ObservableObject {
                 guard let env else { return }
                 Task { await env.startRecording() }
             }
+            // Resolve the real coaching LLM (reads the API key from the Keychain) off the
+            // main thread, then swap it in. Keeps a keychain-auth dialog from freezing launch.
+            Task.detached {
+                let llm = resolveLLM()
+                await MainActor.run { env.applyLLM(llm) }
+            }
             return env
         } catch {
             fatalError("Debrief could not start: \(error)")
@@ -131,7 +151,7 @@ final class AppEnvironment: ObservableObject {
     }
 
     private func startTimers() {
-        detectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        detectTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.pollDetection(DetectionProbes.snapshot(), at: Date()) }
         }
         healthTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in

@@ -6,6 +6,7 @@ public protocol CallAlerting: AnyObject {
 }
 
 import UserNotifications
+import OSLog
 
 /// Real notification adapter. Constructed only from AppEnvironment.live()
 /// (never in tests — see protocol doc comment).
@@ -13,6 +14,7 @@ final class CallAlerts: NSObject, CallAlerting, UNUserNotificationCenterDelegate
     static let recordActionID = "record"
     static let categoryID = "call-detected"
     static let requestID = "call-detected"
+    private static let logger = Logger(subsystem: "com.debrief.app", category: "alerts")
 
     /// Set by live() to route the notification's Record action into
     /// AppEnvironment.startRecording() on the main actor.
@@ -28,9 +30,19 @@ final class CallAlerts: NSObject, CallAlerting, UNUserNotificationCenterDelegate
             UNNotificationCategory(identifier: Self.categoryID, actions: [record],
                                    intentIdentifiers: [], options: []),
         ])
-        // ponytail: result deliberately discarded — a denied permission just degrades to
-        // "no notification pop-up"; the menu-bar icon/label still show call state.
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // A denied/failed permission degrades to "no pop-up" (menu-bar icon still shows
+        // call state), but LOG the outcome — the original code discarded this result,
+        // which hid that permission was simply off in System Settings (requestAuthorization
+        // only prompts when status is .notDetermined; once denied it silently returns false).
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error {
+                Self.logger.error("requestAuthorization failed: \(error.localizedDescription, privacy: .public)")
+            } else if !granted {
+                Self.logger.warning("notifications not granted — enable Debrief in System Settings ▸ Notifications")
+            } else {
+                Self.logger.info("notifications authorized")
+            }
+        }
     }
 
     func callDetected() {
@@ -40,7 +52,13 @@ final class CallAlerts: NSObject, CallAlerting, UNUserNotificationCenterDelegate
         content.sound = .default  // authorization/willPresent request sound, but it only plays if set on the content
         content.categoryIdentifier = Self.categoryID
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: Self.requestID, content: content, trigger: nil))
+            UNNotificationRequest(identifier: Self.requestID, content: content, trigger: nil)) { error in
+                if let error {
+                    Self.logger.error("callDetected add() failed: \(error.localizedDescription, privacy: .public)")
+                } else {
+                    Self.logger.info("callDetected notification posted")
+                }
+            }
     }
 
     func clear() {
