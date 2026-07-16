@@ -18,7 +18,7 @@ public struct RoundType: RawRepresentable, Codable, Hashable, Sendable {
     public static let builtins: [RoundType] = [.recruiterScreen, .behavioral, .technical, .systemDesign, .productSense, .techDeepDive]
 
     /// "take_home_review" → "Take Home Review". Matches the old hardcoded
-    /// names for all four builtins, so no special-casing.
+    /// names for every builtin, so no special-casing.
     public var displayName: String {
         rawValue.split(separator: "_").map(\.capitalized).joined(separator: " ")
     }
