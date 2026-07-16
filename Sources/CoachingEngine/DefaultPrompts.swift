@@ -77,6 +77,66 @@ enum DefaultPrompts {
     didnt_ask_about_process
     """
 
+    static let productSense = """
+    # Overlay: product sense round
+
+    A product design / product sense round: the candidate is given a product, user, or market
+    prompt ("design X for Y", "improve Z"). This round evaluates HOW the candidate thinks, not the
+    specific answer — the interviewer is collecting signal across a rubric, so structure and
+    legible reasoning matter as much as the idea itself.
+
+    Additional focus (roughly the order a strong answer moves through):
+    - Game plan & communication: did the candidate open with a clear plan, state 2-4 focused
+      assumptions that scope the problem without prematurely closing solutions, and "waypoint"
+      transitions between sections? Did they DRIVE and check in, or repeatedly ask the interviewer
+      for direction?
+    - Product motivation / mission: did they anchor on a mission (deeper human need + how it fits
+      the company's strategy and ecosystem) specific enough to guide yet broad enough to explore,
+      and return to it as a north star? Flag feature-first answers with no "why", or missions so
+      vague ("help users be productive") they guide nothing.
+    - User segmentation: did they identify multiple players/segments and pick one, with segments
+      that are MEANINGFULLY different by motivation/behavior/context (not just demographics) and
+      mutually exclusive? Are personas vivid and specific, or generic and product-agnostic?
+    - Problem identification: did they map a real user journey and distinguish problems (obstacles)
+      from needs (desires), then prioritize ONE problem on frequency × severity — or jump to
+      solutions and confuse "need better search" with a concrete, contextual pain point?
+    - Solution development: did they generate multiple meaningfully-different solutions and choose
+      with an explicit impact-vs-effort trade-off, define a realistic v1 scope, and name 2-3 risks?
+      Flag rushing to a single feature list, or a v1 that ignores company's unique strengths.
+    - Success metrics: did they define how they'd measure the chosen solution — a clear primary
+      metric plus guardrails/counter-metrics — or leave it unmeasured?
+
+    Additional weakness tags allowed: no_mission_framing, weak_user_empathy,
+    demographic_only_segments, solution_jumping, no_prioritization, vague_success_metrics
+    """
+
+    static let techDeepDive = """
+    # Overlay: technical deep dive / project presentation round
+
+    The candidate presents a past project (a system, product, or hard problem they owned) and is
+    probed on it. This round exists to verify depth and ownership behind a resume line, so credibility
+    UNDER FOLLOW-UP questioning matters more than the polish of the initial pitch.
+
+    Additional focus:
+    - Narrative: did the presentation follow a clear arc (context/goal → the hard problem →
+      approach → resolution → impact), or was it a disorganized feature tour?
+    - Scope & ownership: is it clear what THE CANDIDATE personally did vs the team? Flag pervasive
+      "we" with no "I", and inability to say where their contribution started and ended.
+    - Technical depth under probing: when THEM drilled into a component or decision, did the
+      candidate go deep credibly and specifically, or get vague/hand-wavy at the next "why"?
+    - Decision justification: were key technical choices explained as reasoned trade-offs (why this,
+      not the alternatives), or presented as the only option / cargo-culted?
+    - Quantified impact: did they tie the work to concrete outcomes (latency, scale, revenue, users,
+      time saved) with real numbers and a baseline, or stop at "it worked well"? Was the project
+      scoped highly enough to demonstrate impact at the candidate's target level?
+    - Q&A handling & honesty: were follow-ups and challenges absorbed collaboratively, or met
+      defensively / by deflecting? Did they say "I don't know" honestly when appropriate, and can
+      they discuss real failures and what they'd do differently — not just a polished success story?
+
+    Additional weakness tags allowed: weak_narrative, unclear_ownership, shallow_technical_depth,
+    unjustified_decisions, defensive_in_qa, no_failures_discussed
+    """
+
     static let systemDesign = """
     # Overlay: system design round
 

@@ -68,7 +68,7 @@ final class PromptStoreTests: XCTestCase {
         try "custom".write(to: dir.appendingPathComponent("bar_raiser.md"), atomically: true, encoding: .utf8)
         try "not a prompt".write(to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
         XCTAssertEqual(store.availableRoundTypes(), [
-            .recruiterScreen, .behavioral, .technical, .systemDesign,       // builtins, fixed order
+            .recruiterScreen, .behavioral, .technical, .systemDesign, .productSense, .techDeepDive,  // builtins, fixed order
             RoundType(rawValue: "bar_raiser"), RoundType(rawValue: "take_home_review"),  // customs, alphabetical
         ])  // base.md excluded, non-.md files excluded
     }

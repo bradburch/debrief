@@ -20,6 +20,6 @@ final class RoundTypeTests: XCTestCase {
 
     func testBuiltinsOrder() {
         XCTAssertEqual(RoundType.builtins,
-                       [.recruiterScreen, .behavioral, .technical, .systemDesign])
+                       [.recruiterScreen, .behavioral, .technical, .systemDesign, .productSense, .techDeepDive])
     }
 }
