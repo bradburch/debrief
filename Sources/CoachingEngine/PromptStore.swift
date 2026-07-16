@@ -17,6 +17,8 @@ public struct PromptStore: Sendable {
         ("technical.md", DefaultPrompts.technical),
         ("recruiter_screen.md", DefaultPrompts.recruiterScreen),
         ("system_design.md", DefaultPrompts.systemDesign),
+        ("product_sense.md", DefaultPrompts.productSense),
+        ("tech_deep_dive.md", DefaultPrompts.techDeepDive),
     ]
 
     public func ensureDefaults() throws {
