@@ -82,6 +82,25 @@ final class AppEnvironment: ObservableObject {
 
     func cancelRecoach() { recoachTask?.cancel() }
 
+    /// Result of the last "Export all now" / folder-picked backfill run, surfaced in Settings.
+    /// nil until a batch export has completed at least once.
+    @Published var exportResult: String?
+
+    /// Exports every session with a transcript to `dir`, off the main thread (many small
+    /// file writes). Publishes the outcome to `exportResult` rather than discarding it, so a
+    /// failed batch (e.g. an unwritable folder) doesn't silently look like success.
+    func exportAllSessions(to dir: URL) {
+        let coaching = self.coaching
+        Task.detached { [self] in
+            let errors = coaching.exportAll(to: dir)
+            await MainActor.run {
+                self.exportResult = errors.isEmpty
+                    ? "Export complete."
+                    : "Export finished with \(errors.count) error(s) — check the folder is writable."
+            }
+        }
+    }
+
     static func outcome(total: Int, failed: Int, cancelled: Bool, completed: Int) -> RecoachOutcome {
         if total == 0 {
             return .init(text: "No sessions with transcripts to re-coach.", symbol: "info.circle", isProblem: false)
@@ -119,6 +138,7 @@ final class AppEnvironment: ObservableObject {
     }
 
     private let alerts: CallAlerting?
+    private let recordingsRoot: URL
     // 5s start confirmation (was 10) so a browser-tab Meet — which has no meeting-app signal
     // to skip the window — alerts in ~6-8s instead of ~20s. End confirmation stays at 10s:
     // it's the tolerance for a transient mic-free blip mid-call, and firing early would
@@ -128,17 +148,19 @@ final class AppEnvironment: ObservableObject {
     private var healthTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
-    init(db: AppDatabase, prompts: PromptStore, coaching: CoachingService, coordinator: RecordingCoordinator, alerts: CallAlerting? = nil) {
+    init(db: AppDatabase, prompts: PromptStore, coaching: CoachingService, coordinator: RecordingCoordinator, alerts: CallAlerting? = nil,
+         recordingsRoot: URL = RecordingStore.recordingsRoot()) {
         self.db = db
         self.prompts = prompts
         self.coaching = coaching
         self.coordinator = coordinator
         self.alerts = alerts
+        self.recordingsRoot = recordingsRoot
         // coordinator is a nested ObservableObject (a plain `let`, not @Published),
         // so its own @Published changes (phase, micLevel, systemLevel, streamWarning)
         // don't propagate to views observing AppEnvironment unless forwarded here.
         coordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        recoverableSessions = RecordingStore.unfinalizedSessions()
+        recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot)
         startTimers()
     }
 
@@ -147,12 +169,12 @@ final class AppEnvironment: ObservableObject {
     func recover(_ dir: URL, metadata: SessionMetadata) async {
         let started = RecordingStore.readManifest(in: dir)?.startedAt ?? Date()
         _ = await coordinator.finalizeFromDisk(dir: dir, startedAt: started, metadata: metadata)
-        recoverableSessions = RecordingStore.unfinalizedSessions()
+        recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot)
     }
 
     func discard(_ dir: URL) {
         try? RecordingStore.deleteSession(at: dir)
-        recoverableSessions = RecordingStore.unfinalizedSessions()
+        recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot)
     }
 
     // nonisolated so the Keychain read can run off the main thread — a synchronous
@@ -196,9 +218,10 @@ final class AppEnvironment: ObservableObject {
 
     static func live() -> AppEnvironment {
         do {
-            let root = RecordingStore.appSupportRoot()
-            let db = try AppDatabase.onDisk(at: root.appendingPathComponent("db/debrief.sqlite"))
-            let prompts = PromptStore(directory: PromptStore.defaultDirectory())
+            // MUST run before any store opens — it may move the DB directory.
+            let loc = DataLocations.resolveAndReconcile()
+            let db = try AppDatabase.onDisk(at: loc.db.appendingPathComponent("debrief.sqlite"))
+            let prompts = PromptStore(directory: loc.prompts)
             try prompts.ensureDefaults()
             // Start with a no-Keychain client; the real LLM is resolved off-main below so a
             // keychain-auth prompt can't hang launch. Coaching only runs long after launch
@@ -211,13 +234,15 @@ final class AppEnvironment: ObservableObject {
                 transcriber: WhisperTranscriber(model: .accurate),
                 makeMicRecorder: { MicRecorder(writer: $0) },
                 makeSystemRecorder: { SystemAudioRecorder(writer: $0) },
+                recordingsRoot: loc.audio,
                 deleteAudioOnSuccess: !keepAudio)
             // Constructing CallAlerts touches UNUserNotificationCenter, which traps when
             // run as an unbundled binary (`swift run`) — launch via the bundled
             // Debrief.app (scripts/make-app.sh) instead.
             let alerts = CallAlerts()
             let env = AppEnvironment(db: db, prompts: prompts, coaching: coaching,
-                                     coordinator: coordinator, alerts: alerts)
+                                     coordinator: coordinator, alerts: alerts,
+                                     recordingsRoot: loc.audio)
             alerts.onRecord = { [weak env] in
                 guard let env else { return }
                 Task { await env.startRecording() }

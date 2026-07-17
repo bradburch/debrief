@@ -1,5 +1,6 @@
 import SwiftUI
 import CoachingEngine
+import CaptureKit
 
 struct SettingsView: View {
     @EnvironmentObject var env: AppEnvironment
@@ -14,6 +15,10 @@ struct SettingsView: View {
     @AppStorage("openAICompatBaseURL") private var compatBaseURL = "http://localhost:11434/v1"
     @AppStorage("openAICompatModel") private var compatModel = ""
     @State private var compatKey = KeychainStore.read(key: "openai-compat-api-key") ?? ""
+    @AppStorage("exportDirectory") private var exportDir = ""
+    @State private var relaunchPrompt: RelaunchPrompt?
+    @State private var relaunchError: String?
+    private struct RelaunchPrompt: Identifiable { let id = UUID(); let dir: String }
 
     private let modelOptions: [(label: String, id: String)] = [
         ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),
@@ -23,6 +28,17 @@ struct SettingsView: View {
 
     private var envAPIKeyPresent: Bool {
         !(ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? "").isEmpty
+    }
+
+    // Gates data-location relocation: a relaunch runs DataLocations.resolveAndReconcile(),
+    // which MOVES the db directory before any store reopens. A same-volume move is a safe
+    // rename, but a cross-volume move is copy-then-unlink — if the OLD instance is still
+    // writing (mid-recording finalize, or a background coach/recoachAll call) during that
+    // window, the tail of the write can be lost or corrupted. Only allow starting a
+    // relocation when nothing can be writing to the DB.
+    private var canRelocate: Bool {
+        if case .idle = env.coordinator.phase, !env.isRecoaching { return true }
+        return false
     }
 
     var body: some View {
@@ -135,6 +151,53 @@ struct SettingsView: View {
                     NSWorkspace.shared.open(PromptStore.defaultDirectory())
                 }
             }
+            Section("Cowork export") {
+                Text(exportDir.isEmpty
+                     ? "Off — choose a folder to write each debrief as a markdown file Claude Cowork can read."
+                     : "Exporting to: \(exportDir)")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Choose export folder…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = true
+                        panel.canChooseFiles = false
+                        panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            exportDir = url.path
+                            env.exportAllSessions(to: url)  // backfill existing sessions immediately
+                        }
+                    }
+                    if !exportDir.isEmpty {
+                        Button("Turn off") { exportDir = "" }
+                        Button("Export all now") {
+                            env.exportAllSessions(to: URL(fileURLWithPath: exportDir))
+                        }
+                    }
+                }
+                if let exportResult = env.exportResult {
+                    Text(exportResult).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("Data locations") {
+                Text("Where Debrief stores its files. Changing a location moves the existing data and relaunches Debrief.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !canRelocate {
+                    Text("Finish or stop any recording and re-coaching before changing these — the move happens on relaunch.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                locationRow("Recordings", desiredKey: "audioDirDesired", actualKey: "audioDirActual",
+                            errorKey: "audioDirError", subdir: "recordings",
+                            defaultPath: RecordingStore.recordingsRoot().path)
+                locationRow("Database", desiredKey: "dbDirDesired", actualKey: "dbDirActual",
+                            errorKey: "dbDirError", subdir: "db",
+                            defaultPath: RecordingStore.appSupportRoot().appendingPathComponent("db").path)
+                locationRow("Prompts", desiredKey: "promptsDirDesired", actualKey: "promptsDirActual",
+                            errorKey: "promptsDirError", subdir: "prompts",
+                            defaultPath: PromptStore.defaultDirectory().path)
+                if let relaunchError {
+                    Label(relaunchError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                }
+            }
             Section("Permissions") {
                 Text("Debrief needs Microphone (your voice) and Screen Recording (the other side's audio). Grant them to the terminal/app you launch Debrief from.")
                     .font(.caption)
@@ -153,6 +216,64 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Existing debrief text, scores, and tags are replaced with fresh ones from the current prompts. Transcripts are untouched. This makes old sessions comparable to new ones, and costs one API call per session (~30s each).")
+        }
+        .alert("Relaunch to move your data?", isPresented: Binding(
+            get: { relaunchPrompt != nil }, set: { if !$0 { relaunchPrompt = nil } })) {
+            Button("Relaunch now") { relaunch() }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Debrief will move your \(relaunchPrompt?.dir.lowercased() ?? "data") to the new folder on the next launch.")
+        }
+    }
+
+    private func relaunch() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, error in
+            // Terminate only once a new instance is confirmed launched. Quitting on failure
+            // would kill the only instance with nothing relaunched and the move never applied
+            // (the move happens at the next launch's reconcile).
+            DispatchQueue.main.async {
+                if error == nil { NSApp.terminate(nil) }
+                else { relaunchError = "Couldn’t relaunch automatically — quit and reopen Debrief to apply the move." }
+            }
+        }
+    }
+
+    /// One relocatable directory. `subdir` is the canonical name appended to the picked parent.
+    private func locationRow(_ title: String, desiredKey: String, actualKey: String,
+                             errorKey: String, subdir: String, defaultPath: String) -> some View {
+        let d = UserDefaults.standard
+        // Mirror DataLocations.reconcile: the path in use is actualKey (promoted only on a
+        // successful move) or the default. desiredKey is NOT a fallback — a set-but-unpromoted
+        // desired means a move is still pending or was refused, not that data has moved.
+        let current = d.string(forKey: actualKey) ?? defaultPath
+        let err = d.string(forKey: errorKey)
+        let desired = d.string(forKey: desiredKey)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).bold()
+                Spacer()
+                Button("Change…") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true; panel.canChooseFiles = false
+                    panel.allowsMultipleSelection = false
+                    panel.message = "Choose a parent folder — Debrief will keep a “\(subdir)” folder inside it."
+                    guard panel.runModal() == .OK, let parent = panel.url else { return }
+                    let picked = parent.appendingPathComponent(subdir).path
+                    guard picked != current else { return }
+                    d.set(picked, forKey: desiredKey)
+                    relaunchPrompt = RelaunchPrompt(dir: title)
+                }
+                .disabled(!canRelocate)
+            }
+            Text(current).font(.caption).foregroundStyle(.secondary)
+            if let desired, desired != current, err == nil {
+                Text("Pending after relaunch: \(desired)").font(.caption).foregroundStyle(.secondary)
+            }
+            if let err {
+                Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            }
         }
     }
 }

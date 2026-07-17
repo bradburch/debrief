@@ -113,4 +113,36 @@ public struct CoachingService: Sendable {
         return errors
     }
 
+    /// Writes one session's markdown to `directory` (created if needed), overwriting the
+    /// deterministic per-session filename so re-exports don't pile up. No-op if the session
+    /// or its detail is missing.
+    public func exportSession(id: Int64, to directory: URL) throws {
+        guard let detail = try db.sessionDetail(id: id) else { return }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(SessionMarkdown.filename(for: detail))
+        try SessionMarkdown.render(detail).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Exports every session that has a transcript. Returns per-session errors; keeps going
+    /// past a failure so one unwritable file can't abort the batch.
+    ///
+    /// Creates `directory` once up front rather than relying on each `exportSession`'s own
+    /// (idempotent) createDirectory: if the directory is genuinely unwritable, that failure
+    /// would otherwise recur once per session and mask the single root cause behind N
+    /// identical per-session errors. On that failure, returns a single sentinel entry (key
+    /// -1, which is never a real session id) instead of iterating at all.
+    public func exportAll(to directory: URL) -> [Int64: Error] {
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            return [-1: error]
+        }
+        var errors: [Int64: Error] = [:]
+        for session in (try? db.sessionsWithTranscript()) ?? [] {
+            guard let id = session.id else { continue }
+            do { try exportSession(id: id, to: directory) } catch { errors[id] = error }
+        }
+        return errors
+    }
+
 }
