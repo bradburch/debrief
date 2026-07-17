@@ -1,5 +1,6 @@
 import SwiftUI
 import CoachingEngine
+import CaptureKit
 
 struct SettingsView: View {
     @EnvironmentObject var env: AppEnvironment
@@ -15,6 +16,8 @@ struct SettingsView: View {
     @AppStorage("openAICompatModel") private var compatModel = ""
     @State private var compatKey = KeychainStore.read(key: "openai-compat-api-key") ?? ""
     @AppStorage("exportDirectory") private var exportDir = ""
+    @State private var relaunchPrompt: RelaunchPrompt?
+    private struct RelaunchPrompt: Identifiable { let id = UUID(); let dir: String }
 
     private let modelOptions: [(label: String, id: String)] = [
         ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),
@@ -160,6 +163,19 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section("Data locations") {
+                Text("Where Debrief stores its files. Changing a location moves the existing data and relaunches Debrief.")
+                    .font(.caption).foregroundStyle(.secondary)
+                locationRow("Recordings", desiredKey: "audioDirDesired", actualKey: "audioDirActual",
+                            errorKey: "audioDirError", subdir: "recordings",
+                            defaultPath: RecordingStore.recordingsRoot().path)
+                locationRow("Database", desiredKey: "dbDirDesired", actualKey: "dbDirActual",
+                            errorKey: "dbDirError", subdir: "db",
+                            defaultPath: RecordingStore.appSupportRoot().appendingPathComponent("db").path)
+                locationRow("Prompts", desiredKey: "promptsDirDesired", actualKey: "promptsDirActual",
+                            errorKey: "promptsDirError", subdir: "prompts",
+                            defaultPath: PromptStore.defaultDirectory().path)
+            }
             Section("Permissions") {
                 Text("Debrief needs Microphone (your voice) and Screen Recording (the other side's audio). Grant them to the terminal/app you launch Debrief from.")
                     .font(.caption)
@@ -178,6 +194,49 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Existing debrief text, scores, and tags are replaced with fresh ones from the current prompts. Transcripts are untouched. This makes old sessions comparable to new ones, and costs one API call per session (~30s each).")
+        }
+        .alert("Relaunch to move your data?", isPresented: Binding(
+            get: { relaunchPrompt != nil }, set: { if !$0 { relaunchPrompt = nil } })) {
+            Button("Relaunch now") { relaunch() }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Debrief will move your \(relaunchPrompt?.dir.lowercased() ?? "data") to the new folder on the next launch.")
+        }
+    }
+
+    private func relaunch() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+    }
+
+    /// One relocatable directory. `subdir` is the canonical name appended to the picked parent.
+    private func locationRow(_ title: String, desiredKey: String, actualKey: String,
+                             errorKey: String, subdir: String, defaultPath: String) -> some View {
+        let d = UserDefaults.standard
+        let current = d.string(forKey: actualKey) ?? d.string(forKey: desiredKey) ?? defaultPath
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).bold()
+                Spacer()
+                Button("Change…") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true; panel.canChooseFiles = false
+                    panel.allowsMultipleSelection = false
+                    panel.message = "Choose a parent folder — Debrief will keep a “\(subdir)” folder inside it."
+                    guard panel.runModal() == .OK, let parent = panel.url else { return }
+                    let desired = parent.appendingPathComponent(subdir).path
+                    guard desired != current else { return }
+                    d.set(desired, forKey: desiredKey)
+                    relaunchPrompt = RelaunchPrompt(dir: title)
+                }
+            }
+            Text(current).font(.caption).foregroundStyle(.secondary)
+            if let err = d.string(forKey: errorKey) {
+                Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            }
         }
     }
 }
