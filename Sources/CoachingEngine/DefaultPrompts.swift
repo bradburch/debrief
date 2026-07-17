@@ -75,9 +75,16 @@ enum DefaultPrompts {
     steps". Capture these in EVERY round type, not just recruiter screens: process detail leaks
     out wherever an interviewer mentions it.
 
-    Use `[]` only when the topic genuinely never came up. Don't manufacture a process out of a
-    polite sign-off — "we'll be in touch" alone is not a process note — but if a timeframe, a
-    name, a round, or an ask was stated, it belongs here.
+    Use `[]` when the topic genuinely never came up — and `[]` means EMPTY, not a note
+    explaining the absence. Never write anything like "no next steps were discussed" or "the
+    interviewer invited questions but gave no timeline". A note describing the LACK of a
+    process is not a process note; it is the empty case with extra words, and there is nothing
+    in it for the candidate to act on. A polite close ("we'll be in touch", "any questions for
+    me?") with nothing concrete attached is also `[]`.
+
+    Both mistakes are real, so don't trade one for the other: inventing a note out of an
+    absence is noise, and dropping a next step that WAS stated leaves the candidate unable to
+    plan. If a timeframe, a name, a round, or an ask was said out loud, capture it.
 
     ## Scoring bands — apply these to every dimension
 
