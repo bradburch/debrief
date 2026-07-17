@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State private var compatKey = KeychainStore.read(key: "openai-compat-api-key") ?? ""
     @AppStorage("exportDirectory") private var exportDir = ""
     @State private var relaunchPrompt: RelaunchPrompt?
+    @State private var relaunchError: String?
     private struct RelaunchPrompt: Identifiable { let id = UUID(); let dir: String }
 
     private let modelOptions: [(label: String, id: String)] = [
@@ -175,6 +176,9 @@ struct SettingsView: View {
                 locationRow("Prompts", desiredKey: "promptsDirDesired", actualKey: "promptsDirActual",
                             errorKey: "promptsDirError", subdir: "prompts",
                             defaultPath: PromptStore.defaultDirectory().path)
+                if let relaunchError {
+                    Label(relaunchError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                }
             }
             Section("Permissions") {
                 Text("Debrief needs Microphone (your voice) and Screen Recording (the other side's audio). Grant them to the terminal/app you launch Debrief from.")
@@ -207,8 +211,14 @@ struct SettingsView: View {
     private func relaunch() {
         let config = NSWorkspace.OpenConfiguration()
         config.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, error in
+            // Terminate only once a new instance is confirmed launched. Quitting on failure
+            // would kill the only instance with nothing relaunched and the move never applied
+            // (the move happens at the next launch's reconcile).
+            DispatchQueue.main.async {
+                if error == nil { NSApp.terminate(nil) }
+                else { relaunchError = "Couldn’t relaunch automatically — quit and reopen Debrief to apply the move." }
+            }
         }
     }
 
@@ -216,7 +226,12 @@ struct SettingsView: View {
     private func locationRow(_ title: String, desiredKey: String, actualKey: String,
                              errorKey: String, subdir: String, defaultPath: String) -> some View {
         let d = UserDefaults.standard
-        let current = d.string(forKey: actualKey) ?? d.string(forKey: desiredKey) ?? defaultPath
+        // Mirror DataLocations.reconcile: the path in use is actualKey (promoted only on a
+        // successful move) or the default. desiredKey is NOT a fallback — a set-but-unpromoted
+        // desired means a move is still pending or was refused, not that data has moved.
+        let current = d.string(forKey: actualKey) ?? defaultPath
+        let err = d.string(forKey: errorKey)
+        let desired = d.string(forKey: desiredKey)
         return VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(title).bold()
@@ -227,14 +242,17 @@ struct SettingsView: View {
                     panel.allowsMultipleSelection = false
                     panel.message = "Choose a parent folder — Debrief will keep a “\(subdir)” folder inside it."
                     guard panel.runModal() == .OK, let parent = panel.url else { return }
-                    let desired = parent.appendingPathComponent(subdir).path
-                    guard desired != current else { return }
-                    d.set(desired, forKey: desiredKey)
+                    let picked = parent.appendingPathComponent(subdir).path
+                    guard picked != current else { return }
+                    d.set(picked, forKey: desiredKey)
                     relaunchPrompt = RelaunchPrompt(dir: title)
                 }
             }
             Text(current).font(.caption).foregroundStyle(.secondary)
-            if let err = d.string(forKey: errorKey) {
+            if let desired, desired != current, err == nil {
+                Text("Pending after relaunch: \(desired)").font(.caption).foregroundStyle(.secondary)
+            }
+            if let err {
                 Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             }
         }
