@@ -18,7 +18,7 @@ final class OpenAICompatibleClientTests: XCTestCase {
     static let goodJSON = """
     {"prose_debrief":"Solid.","scores":{"answer_relevance":4,"structure":3,"conciseness":3,"questions_asked":2},
      "advancement":"lean_no","advancement_rationale":"Never landed a result.",
-     "weakness_tags":[],"highlights":[{"t":"00:05:10","note":"good {question}"}],"action_items":["Prep"]}
+     "weakness_tags":[],"highlights":[{"t":"00:05:10","note":"good {question}"}],"action_items":["Prep"],"process_notes":[]}
     """
 
     // The format appendix's illustrative example object — a weak local model may echo this
@@ -131,7 +131,7 @@ final class OpenAICompatibleClientTests: XCTestCase {
         let zeros = """
         {"prose_debrief":"Zeroed.","scores":{"answer_relevance":0,"structure":0,"conciseness":0,"questions_asked":0},
          "advancement":"strong_no","advancement_rationale":"r","weakness_tags":[],
-         "highlights":[{"t":"00:00:01","note":"n"}],"action_items":["a"]}
+         "highlights":[{"t":"00:00:01","note":"n"}],"action_items":["a"],"process_notes":[]}
         """
         MockURLProtocol.handler = { _ in (200, self.envelope(content: zeros)) }
         do {

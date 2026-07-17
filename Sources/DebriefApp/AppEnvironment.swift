@@ -70,9 +70,11 @@ final class AppEnvironment: ObservableObject {
             }
             let total = self.recoachProgress?.total ?? 0
             let done = self.recoachProgress?.done ?? 0
-            let cancelled = Task.isCancelled || done < total
+            // Progress is the authority, not Task.isCancelled: cancelling after the last
+            // session already finished still sets isCancelled, which reported a nonsense
+            // "Stopped after 11 of 11" and swallowed the failure count.
             self.recoachOutcome = Self.outcome(total: total, failed: errors.count,
-                                               cancelled: cancelled, completed: done)
+                                               cancelled: done < total, completed: done)
             self.recoachProgress = nil
             self.recoachTask = nil
         }
@@ -85,7 +87,9 @@ final class AppEnvironment: ObservableObject {
             return .init(text: "No sessions with transcripts to re-coach.", symbol: "info.circle", isProblem: false)
         }
         if cancelled {
-            return .init(text: "Stopped after \(completed) of \(total). The rest keep their old debriefs.",
+            // Report failures too — the cancelled branch used to return first and hide them.
+            let failures = failed > 0 ? " \(failed) of those failed." : ""
+            return .init(text: "Stopped after \(completed) of \(total).\(failures) The rest keep their old debriefs.",
                          symbol: "stop.circle", isProblem: true)
         }
         if failed > 0 {

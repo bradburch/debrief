@@ -51,7 +51,13 @@ struct SessionsView: View {
                                             Text(String(format: "%.1f", score)).monospacedDigit()
                                                 .foregroundStyle(.secondary)
                                         }
-                                        if row.overallScore == nil {
+                                        // Show the badge whenever coaching isn't complete, not
+                                        // just when there's no score: a re-coach that fails on
+                                        // an already-complete session leaves the stale feedback
+                                        // row behind, so keying on `overallScore == nil` hid
+                                        // the failure entirely and showed the old score as if
+                                        // it were fresh.
+                                        if row.session.coachingStatus != .complete {
                                             statusBadge(row.session.coachingStatus)
                                         }
                                     }
@@ -74,9 +80,12 @@ struct SessionsView: View {
                             Button("Delete", role: .destructive, action: deleteSelected)
                             Button("Cancel", role: .cancel) {}
                         }
-                        // Runs after the List has the rows, which onAppear alone can't
-                        // guarantee — scrollTo on a row that isn't built yet does nothing.
-                        .onChange(of: scrollToSession) {
+                        // `task(id:)`, not `onChange`: this List only exists once `rows` is
+                        // non-empty, so on a Pipeline reveal it is built AFTER
+                        // revealPendingSession() already set scrollToSession — an onChange
+                        // installed here would never observe a change and never fire.
+                        // task(id:) runs on appear too, which is the case that matters.
+                        .task(id: scrollToSession) {
                             guard let target = scrollToSession else { return }
                             proxy.scrollTo(target, anchor: .center)
                             scrollToSession = nil
@@ -291,7 +300,10 @@ struct SessionDetailView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Label("Process & next steps", systemImage: "signpost.right.fill")
                                     .font(.headline).foregroundStyle(.blue)
-                                ForEach(notes, id: \.t) { n in
+                                // Index, not `t`: two notes can legitimately share a timestamp
+                                // (the model quotes one moment twice), and a duplicate ForEach
+                                // id drops rows and scrambles them.
+                                ForEach(Array(notes.enumerated()), id: \.offset) { _, n in
                                     Button {
                                         scrollTarget = parseTimestamp(n.t)
                                     } label: {

@@ -111,7 +111,19 @@ final class CoachingIntegrationTests: XCTestCase {
     }
 
     /// The other half of the process_notes contract: when the interviewer DOES lay out the
-    /// process, it must be captured with its specifics rather than paraphrased into mush.
+    /// process, it should be captured with its specifics rather than paraphrased into mush.
+    ///
+    /// THIS TEST IS A RECALL PROBE AND CAN FLAKE. Extraction recall is a model behaviour, not a
+    /// branch — measured misses on this transcript at roughly 2 in 7 before the prompt was
+    /// rebalanced (the instruction spent three sentences on *not* inventing notes and one on
+    /// capturing them, which suppressed recall; the guard now sits after the positive
+    /// instruction, not in front of it). A failure here means "recall regressed or is having a
+    /// bad day", not "the build is broken" — re-run before believing it, and treat a
+    /// consistent failure as a prompt regression worth bisecting.
+    ///
+    /// Deliberately not weakened to always-pass: a probe that cannot fail measures nothing.
+    /// It is opt-in (DEBRIEF_RUN_INTEGRATION) and excluded from `--skip IntegrationTests`, so
+    /// it never flakes the default suite.
     func testRealAPIExtractsProcessNotesWhenStated() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["DEBRIEF_RUN_INTEGRATION"] == "1")
         let result = try await coach(Self.processTranscript, round: .recruiterScreen)

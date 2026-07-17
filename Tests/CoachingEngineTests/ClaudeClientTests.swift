@@ -29,7 +29,7 @@ final class ClaudeClientTests: XCTestCase {
     {"prose_debrief":"Good interview.","scores":{"answer_relevance":4,"structure":2,"conciseness":3,"questions_asked":4},
      "advancement":"lean_yes","advancement_rationale":"Recovered well after the hint.",
      "weakness_tags":["rambling_intro"],"highlights":[{"t":"00:14:22","note":"Strong recovery"}],
-     "action_items":["Prep a 90 second intro"]}
+     "action_items":["Prep a 90 second intro"],"process_notes":[]}
     """
 
     func envelope(text: String, stopReason: String = "end_turn") -> Data {

@@ -12,28 +12,37 @@ import Foundation
 /// so no path into the DB — live stop or crash recovery — can persist a marker, and the
 /// v5 migration can reuse the exact same rules on rows written before this existed.
 public enum TranscriptArtifacts {
-    // Complete markers only. A dangling opener is deliberately NOT matched to end-of-string:
-    // "so I said [ and then left" would lose real speech. Truncated openers are handled by
-    // `isSpeechless` below, which drops the segment only when nothing real remains.
+    // The marker words themselves. Used to ANCHOR the looser rules below — a rule that fires
+    // on any bracket/paren span is the dangerous kind, because deleting real speech is far
+    // worse than leaving a marker in.
+    private static let markerWord = "silence|pause|blank[ _]?audio|noise|inaudible|indistinct|music|no speech(?: detected)?|no audio"
+
+    // Bracketed AND parenthesized spans, both broad. Whisper learned its conventions from
+    // subtitles, where (parens) and [brackets] both mean "not speech" — it renders spoken
+    // asides with commas, not parens. Checked against every parenthesized span in a real
+    // 11-interview database: (Laughter) (indistinct) (laughing) (inaudible) (sniffing)
+    // (scissors snipping) (door opens) (eerie music) (clicking) (upbeat music) — 10 of 10
+    // non-speech, 0 spoken asides. Anchoring this on marker words instead would leak most of
+    // them. ponytail: if a spoken aside in parens ever shows up, narrow to a word-count or
+    // digit heuristic then — not before, on speculation.
     private static let markers = try! NSRegularExpression(pattern: #"\[[^\]]*\]|\([^\)]*\)"#)
     // A chunk boundary can cut a marker, leaving a trailing opener with nothing after it.
     private static let danglingOpener = try! NSRegularExpression(pattern: #"[\[\(]\s*$"#)
 
-    // The marker words themselves, needed because a chunk boundary can eat the OPENING
-    // bracket ("silence ] Okay.") or Whisper drops the brackets entirely ("Silence.") —
-    // both observed in real recordings, and neither is reachable by the bracket rules above.
-    private static let markerWord = "silence|pause|blank[ _]?audio|noise|inaudible|indistinct|music|no speech(?: detected)?|no audio"
-
-    // "silence ]" — a closer whose opener was lost. Anchored on the marker word so an
-    // ordinary "]" in speech can't take the text before it with it.
+    // "silence ]" — a closer whose opener was eaten by a chunk boundary. Anchored on the
+    // marker word so an ordinary "]" in speech can't take the text before it with it.
     private static let danglingCloser = try! NSRegularExpression(
         pattern: #"\b(?:\#(markerWord))\b\s*[\]\)]"#, options: [.caseInsensitive])
 
-    // A marker word standing alone as a whole sentence: "Silence." / "Yeah. Silence."
-    // Requires terminal punctuation or end-of-string after the word — WITHOUT that, this
-    // would gut real speech like "Music is my hobby" or "there was a pause".
+    // Whisper sometimes drops the brackets entirely ("Silence.", "Yeah. Silence."), which no
+    // bracket rule can reach. Restricted to the two markers ACTUALLY observed bare in real
+    // recordings — the full markerWord list here deleted genuine speech: "No audio." (an
+    // interviewer flagging a mic problem) and "Pause. Let me think about that." both vanished.
+    // Short standalone utterances are exactly what Whisper emits as their own segment, so a
+    // false positive here costs a whole line of the transcript.
+    private static let bareMarkerWord = "silence|blank[ _]?audio"
     private static let bareMarkerSentence = try! NSRegularExpression(
-        pattern: #"(?:^|(?<=[.!?])\s*)\b(?:\#(markerWord))\b\s*(?:[.!?]|$)"#,
+        pattern: #"(?:^|(?<=[.!?])\s*)\b(?:\#(bareMarkerWord))\b\s*(?:[.!?]|$)"#,
         options: [.caseInsensitive])
 
     // Whisper's speaker-change marker. Debrief attributes speakers from the dual-stream split

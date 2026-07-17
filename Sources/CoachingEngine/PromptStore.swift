@@ -1,6 +1,12 @@
 import Foundation
 import Store
 
+public enum PromptError: Error, Equatable {
+    /// base.md declares no `## Scored dimensions`, so there is nothing to score. Reachable if
+    /// the user edits the section out of base.md; `ensureDefaults` repairs the upgrade case.
+    case noScoredDimensions(round: String)
+}
+
 public struct PromptStore: Sendable {
     public let directory: URL
 
@@ -21,13 +27,40 @@ public struct PromptStore: Sendable {
         ("tech_deep_dive.md", DefaultPrompts.techDeepDive),
     ]
 
+    /// Heading that marks a prompt as speaking the current contract. Its absence in a builtin
+    /// we ship is the upgrade signal — see `ensureDefaults`.
+    static let dimensionsHeading = "## Scored dimensions"
+
+    /// Seeds missing prompts, and upgrades builtin prompts left over from before scored
+    /// dimensions were parsed out of the markdown.
+    ///
+    /// The upgrade is not optional politeness. `ensureDefaults` deliberately never clobbers a
+    /// file, so every install that had already launched Debrief kept a `base.md` with no
+    /// `## Scored dimensions` heading — making `dimensions(for:)` return `[]`, which builds an
+    /// empty `scores` schema, stores every debrief with a 0.0 average, and fails every local-LLM
+    /// debrief outright. A stale prompt is not merely out of date here; it is incompatible with
+    /// the response contract the clients enforce.
+    ///
+    /// Any user edits are preserved next to the file as `<name>.md.pre-dimensions.bak` rather
+    /// than silently discarded — we can't merge them, but we must not lose them.
     public func ensureDefaults() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (file, content) in Self.defaults {
             let url = directory.appendingPathComponent(file)
-            if !FileManager.default.fileExists(atPath: url.path) {
+            guard FileManager.default.fileExists(atPath: url.path) else {
                 try content.write(to: url, atomically: true, encoding: .utf8)
+                continue
             }
+            // Only upgrade a builtin we ship, only when OUR default declares dimensions and
+            // the file on disk doesn't. A custom round type the user wrote has no dimensions
+            // section and is none of our business.
+            let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            guard content.contains(Self.dimensionsHeading),
+                  !existing.contains(Self.dimensionsHeading) else { continue }
+            let backup = url.appendingPathExtension("pre-dimensions.bak")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.moveItem(at: url, to: backup)
+            try content.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 
@@ -72,12 +105,20 @@ public struct PromptStore: Sendable {
     /// The scored dimension keys for a round: base's shared delivery dimensions plus the
     /// overlay's round-specific ones. This is the JSON-schema contract the LLM must return,
     /// so it is derived from the same markdown the model reads — the two cannot drift.
+    ///
+    /// Throws rather than returning [] when base.md declares nothing. An empty set is not a
+    /// benign edge case: it builds a `scores` schema with no properties, which the Anthropic
+    /// path happily stores as a 0.0-average debrief and the local path fails on every session.
+    /// Failing here leaves the session retryable and says why.
     public func dimensions(for roundType: RoundType) throws -> [String] {
         let base = try String(contentsOf: directory.appendingPathComponent("base.md"), encoding: .utf8)
         let overlay = (try? String(contentsOf: directory.appendingPathComponent("\(roundType.rawValue).md"),
                                    encoding: .utf8)) ?? ""
         var seen = Set<String>()
-        return (Self.parseDimensions(base) + Self.parseDimensions(overlay)).filter { seen.insert($0).inserted }
+        let dims = (Self.parseDimensions(base) + Self.parseDimensions(overlay))
+            .filter { seen.insert($0).inserted }
+        guard !dims.isEmpty else { throw PromptError.noScoredDimensions(round: roundType.rawValue) }
+        return dims
     }
 
     public func assembleSystemPrompt(roundType: RoundType,

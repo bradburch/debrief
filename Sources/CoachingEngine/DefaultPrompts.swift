@@ -58,6 +58,27 @@ enum DefaultPrompts {
     `advancement_rationale`: 1-2 sentences naming the ONE thing that actually decided it —
     the specific moment, answer, or gap. Not a summary. The decisive factor.
 
+    ## What happens next — capture it, don't summarize it away
+
+    `process_notes`: every concrete thing THEM said about the interview PROCESS, NEXT STEPS,
+    or TIMELINE, as timestamped notes. If the interviewer stated any of the following, you MUST
+    record it — a stated next step that you fail to capture is a failure of this debrief:
+
+    - how many rounds remain, and what each one covers
+    - who the candidate would meet (names, titles)
+    - when they will follow up, or when a decision lands
+    - anything the candidate is asked to send or do, and by when
+    - any named blocker, decision point, or logistical constraint
+
+    Quote the specifics — "three more rounds, last one is a panel with the VP", "we'll decide by
+    Friday", "send the take-home by Tuesday" — rather than compressing them into "discussed next
+    steps". Capture these in EVERY round type, not just recruiter screens: process detail leaks
+    out wherever an interviewer mentions it.
+
+    Use `[]` only when the topic genuinely never came up. Don't manufacture a process out of a
+    polite sign-off — "we'll be in touch" alone is not a process note — but if a timeframe, a
+    name, a round, or an ask was stated, it belongs here.
+
     ## Scoring bands — apply these to every dimension
 
     Score against the bar for the candidate's target level and role, not in absolute terms.
@@ -95,17 +116,7 @@ enum DefaultPrompts {
       strength worth repeating, not only problems.
     - action_items: 2-5 concrete things to do before the next interview. Imperative voice.
       Order them by what would most change the verdict, highest-leverage first.
-    - process_notes: 0-6 timestamped notes capturing anything THEM said about the interview
-      PROCESS, NEXT STEPS, or TIMELINE — how many rounds remain and what each covers, who the
-      candidate would meet, when they'll follow up, what they want from the candidate next,
-      and any named blocker or decision point. Quote the specifics ("three more rounds, last
-      one is a panel with the VP", "we'll decide by Friday", "send us the take-home by Tuesday")
-      rather than paraphrasing them away. Capture these in EVERY round type, not just recruiter
-      screens — process detail leaks out wherever an interviewer mentions it.
-      Leave this EMPTY if the topic never came up. A generic sign-off ("we'll be in touch") is
-      NOT a process note unless it carries something concrete: a timeframe, a name, a round, or
-      an action. Never infer a process the transcript doesn't state — a wrong "next step" here
-      is worse than none, because the candidate will plan around it.
+    - process_notes: 0-6 timestamped {t, note} items — see "What happens next" above.
     - prose_debrief: 300-600 words. Open by stating the verdict and why in one paragraph —
       the candidate should learn whether they advanced in the first two sentences. Then the
       two or three highest-leverage improvements, each grounded in a quoted moment. Close with

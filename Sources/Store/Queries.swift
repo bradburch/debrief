@@ -95,7 +95,13 @@ extension AppDatabase {
     /// Strips Whisper's non-speech markers and drops segments that were nothing else, so the
     /// transcript table holds speech only. Done here rather than at the call site because both
     /// the live-stop and crash-recovery paths funnel through it — see TranscriptArtifacts.
-    public func insertSegments(_ segs: [TranscriptSegmentRecord]) throws {
+    ///
+    /// Returns the number of rows actually written, which can be 0 even for a non-empty input
+    /// (a recording whose every segment was `[BLANK_AUDIO]`). Callers must not assume the
+    /// input count — a session with no transcript still gets coached, and the LLM will
+    /// confabulate a debrief for an interview it cannot see.
+    @discardableResult
+    public func insertSegments(_ segs: [TranscriptSegmentRecord]) throws -> Int {
         let cleaned = segs.compactMap { seg -> TranscriptSegmentRecord? in
             let text = TranscriptArtifacts.clean(seg.text)
             guard !text.isEmpty else { return nil }
@@ -104,6 +110,7 @@ extension AppDatabase {
             return seg
         }
         try dbWriter.write { db in for var seg in cleaned { try seg.insert(db) } }
+        return cleaned.count
     }
 
     public func deleteSession(id: Int64) throws {

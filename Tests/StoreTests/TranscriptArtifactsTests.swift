@@ -85,6 +85,38 @@ final class TranscriptArtifactsTests: XCTestCase {
         }
     }
 
+    func testMarkerWordsAsWholeSentencesThatAreStillRealSpeechSurvive() {
+        // Whisper emits short utterances as their own segment, so a false positive here costs
+        // a whole line. Every one of these was destroyed by the first version of the rules —
+        // "No audio." is an interviewer flagging a mic problem, not a Whisper marker.
+        for speech in [
+            "No audio.",
+            "Music.",
+            "Noise? Yes.",
+            "Pause. Let me think about that.",
+            "No audio? I can hear you fine.",
+        ] {
+            XCTAssertEqual(TranscriptArtifacts.clean(speech), speech, "ate a real utterance")
+        }
+    }
+
+    func testRemovesEveryParenthesizedSoundEventSeenInRealRecordings() {
+        // The full set of parenthesized spans from a real 11-interview database. Every one is
+        // a non-speech annotation — which is why the paren rule stays broad rather than being
+        // anchored on marker words (that leaks Laughter/door opens/eerie music/upbeat music).
+        XCTAssertEqual(TranscriptArtifacts.clean("(Laughter)"), "")
+        XCTAssertEqual(TranscriptArtifacts.clean("(indistinct)"), "")
+        XCTAssertEqual(TranscriptArtifacts.clean("(inaudible)"), "")
+        XCTAssertEqual(TranscriptArtifacts.clean("(sniffing)"), "")
+        XCTAssertEqual(TranscriptArtifacts.clean("(scissors snipping)"), "")
+        XCTAssertEqual(TranscriptArtifacts.clean("(door opens)"), "")
+        XCTAssertEqual(TranscriptArtifacts.clean("(eerie music)"), "")
+        XCTAssertEqual(TranscriptArtifacts.clean("(clicking)"), "")
+        // Annotation attached to real speech: keep the speech, drop the annotation.
+        XCTAssertEqual(TranscriptArtifacts.clean("(laughing) That's so cool."), "That's so cool.")
+        XCTAssertEqual(TranscriptArtifacts.clean("Okay, bye. (upbeat music)"), "Okay, bye.")
+    }
+
     func testInsertSegmentsCleansAndDropsOnWrite() throws {
         let db = try AppDatabase.inMemory()
         let co = try db.fetchOrCreateCompany(named: "Acme")

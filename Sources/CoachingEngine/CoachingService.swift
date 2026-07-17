@@ -52,7 +52,11 @@ public struct CoachingService: Sendable {
             // URLSession call, and marking that session `failed` would flip a session that
             // still holds perfectly good feedback into an error state the user has to clean
             // up — the exact opposite of what Stop should do.
-            if !Self.isCancellation(error) {
+            //
+            // Keyed on Task.isCancelled, not the error type: a URLError.cancelled with no task
+            // cancellation behind it (a proxy or the OS killing the connection) is a genuine
+            // failure and must stay retryable.
+            if !Task.isCancelled {
                 try? db.markCoachingFailed(sessionId: sessionId)
             }
             throw error
@@ -94,10 +98,12 @@ public struct CoachingService: Sendable {
             if let id = session.id {
                 do { try await coach(sessionId: id) }
                 catch {
-                    // Cancellation lands here too (the in-flight request throws). It is not a
-                    // per-session failure and must not be reported as one, or Stop would
-                    // always look like "1 failed".
-                    if Self.isCancellation(error) { break }
+                    // Stop lands here (the in-flight request throws). It is not a per-session
+                    // failure and must not be reported as one, or Stop would always look like
+                    // "1 failed". Gated on Task.isCancelled rather than the error type:
+                    // retryAllPending shares this loop and has no Stop button, so a stray
+                    // URLError.cancelled there must be recorded, not silently end the run.
+                    if Task.isCancelled { break }
                     errors[id] = error
                 }
             }
@@ -107,10 +113,4 @@ public struct CoachingService: Sendable {
         return errors
     }
 
-    /// Swift concurrency cancellation surfaces two ways here: `CancellationError` from the
-    /// task machinery, and `URLError.cancelled` when it's the URLSession call that got torn
-    /// down — which is the common one, since that's where a re-run spends its time.
-    static func isCancellation(_ error: Error) -> Bool {
-        error is CancellationError || (error as? URLError)?.code == .cancelled
-    }
 }

@@ -71,7 +71,12 @@ public struct CoachingResult: Codable, Equatable, Sendable {
         weaknessTags = try c.decode([String].self, forKey: .weaknessTags)
         highlights = try c.decode([Highlight].self, forKey: .highlights)
         actionItems = try c.decode([String].self, forKey: .actionItems)
-        processNotes = try c.decodeIfPresent([Highlight].self, forKey: .processNotes) ?? []
+        // Strict, matching both clients: the schema lists process_notes in `required` and the
+        // local-LLM appendix calls it mandatory. Tolerating its absence here would make the one
+        // path that could catch a client dropping the field the path that hides it — and an
+        // omitted field would be indistinguishable from an honest "the topic never came up".
+        // `[]` is the correct answer when nothing was said; omitting it is a contract break.
+        processNotes = try c.decode([Highlight].self, forKey: .processNotes)
 
         if let bad = scores.first(where: { !(1...5).contains($0.value) }) {
             throw DecodingError.dataCorruptedError(

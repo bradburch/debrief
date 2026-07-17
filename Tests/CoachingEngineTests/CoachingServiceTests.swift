@@ -25,8 +25,20 @@ struct RequireMarkerLLM: CoachingLLM {
     }
 }
 
-/// Throws the error a torn-down URLSession call throws when the user hits Stop.
-struct CancellingLLM: CoachingLLM {
+/// Stands in for a real in-flight API call: blocks until the task is cancelled, at which point
+/// `Task.sleep` throws — exactly what URLSession does when Stop tears the request down.
+struct BlockingLLM: CoachingLLM {
+    func generateCoaching(systemPrompt: String, userMessage: String,
+                          dimensions: [String]) async throws -> CoachingResult {
+        try await Task.sleep(nanoseconds: 30_000_000_000)
+        XCTFail("BlockingLLM was expected to be cancelled, not to finish")
+        throw ClaudeError.emptyResponse
+    }
+}
+
+/// A URLError.cancelled with NO task cancellation behind it — a proxy or the OS killing the
+/// connection. That is a genuine failure, not a Stop.
+struct SpuriousCancelLLM: CoachingLLM {
     func generateCoaching(systemPrompt: String, userMessage: String,
                           dimensions: [String]) async throws -> CoachingResult {
         throw URLError(.cancelled)
@@ -98,31 +110,37 @@ final class CoachingServiceTests: XCTestCase {
         XCTAssertEqual(detail.feedback?.advancementRationale, "Stories had no result.")
     }
 
-    func testCancellingARerunLeavesTheSessionCompleteNotFailed() async throws {
+    func testStoppingARerunLeavesTheSessionCompleteAndReportsNoFailure() async throws {
         let id = try seedSession()
         // Give the session a good debrief first, the way a real re-run would find it.
         try await CoachingService(db: db, prompts: prompts, llm: StubLLM(result: .success(goodResult())))
             .coach(sessionId: id)
         XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .complete)
 
-        // Hitting Stop tears down the in-flight request. That is not a failed debrief: the
-        // session still holds its previous feedback, and flipping it to `failed` would show a
-        // spurious error badge and drag it into "Retry pending debriefs".
-        let stopped = CoachingService(db: db, prompts: prompts, llm: CancellingLLM())
-        do { try await stopped.coach(sessionId: id); XCTFail("expected throw") }
-        catch { XCTAssertTrue(CoachingService.isCancellation(error)) }
+        // Hitting Stop cancels the task, tearing down the in-flight request. That is not a
+        // failed debrief: the session still holds its previous feedback, and flipping it to
+        // `failed` would show a spurious error badge and drag it into "Retry pending debriefs".
+        let service = CoachingService(db: db, prompts: prompts, llm: BlockingLLM())
+        let task = Task { await service.recoachAll() }
+        try await Task.sleep(nanoseconds: 100_000_000)  // let it reach the LLM call
+        task.cancel()
+        let errors = await task.value
 
+        XCTAssertTrue(errors.isEmpty, "Stop reported as a session failure: \(errors)")
         let after = try XCTUnwrap(db.sessionDetail(id: id))
         XCTAssertEqual(after.session.coachingStatus, .complete, "Stop marked a good session failed")
         XCTAssertEqual(after.feedback?.proseDebrief, "Decent.", "previous debrief was lost")
     }
 
-    func testCancelledRerunIsNotReportedAsAFailure() async throws {
-        _ = try seedSession()
-        // recoachAll surfaces per-session errors to the UI; a cancellation must not appear
-        // there, or Stop would always read as "1 failed".
-        let errors = await CoachingService(db: db, prompts: prompts, llm: CancellingLLM()).recoachAll()
-        XCTAssertTrue(errors.isEmpty, "cancellation reported as a session failure: \(errors)")
+    func testSpuriousUrlCancelIsStillTreatedAsAFailure() async throws {
+        // retryAllPending shares coachEach but has no Stop button. A URLError.cancelled with
+        // no task cancellation is the network failing, not the user stopping — it must be
+        // recorded and left retryable, not silently swallowed.
+        let id = try seedSession()
+        let errors = await CoachingService(db: db, prompts: prompts, llm: SpuriousCancelLLM())
+            .retryAllPending()
+        XCTAssertEqual(errors.count, 1, "a network cancel was swallowed as if it were Stop")
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .failed)
     }
 
     func testRealFailuresAreStillMarkedFailed() async throws {
