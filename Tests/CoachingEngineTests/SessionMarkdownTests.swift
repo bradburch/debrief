@@ -41,6 +41,30 @@ final class SessionMarkdownTests: XCTestCase {
         XCTAssertEqual(SessionMarkdown.filename(for: fixture()), "2023-11-14-acme-corp-product_sense-42.md")
     }
 
+    func testRenderSkipsMalformedJSONColumnsWithoutCrashing() {
+        let base = fixture()
+        let f = base.feedback!
+        let malformed = FeedbackRecord(
+            id: f.id, sessionId: f.sessionId,
+            proseDebrief: f.proseDebrief,
+            scoresJSON: "{not json",
+            highlightsJSON: f.highlightsJSON,
+            actionItemsJSON: f.actionItemsJSON,
+            overallScore: f.overallScore,
+            advancement: f.advancement, advancementRationale: f.advancementRationale,
+            processNotesJSON: f.processNotesJSON)
+        let detail = SessionDetail(session: base.session, company: base.company,
+                                   segments: base.segments, feedback: malformed, tags: base.tags)
+        let md = SessionMarkdown.render(detail)
+        // Malformed scores column is skipped, not fatal.
+        XCTAssertFalse(md.contains("## Scores"))
+        // Sections whose JSON was valid still render.
+        XCTAssertTrue(md.contains("Clear ownership framing"))
+        XCTAssertTrue(md.contains("Quantify impact with a metric"))
+        // Transcript always present.
+        XCTAssertTrue(md.contains("[00:00:04] YOU: I led the checkout redesign."))
+    }
+
     func testRenderWithoutFeedbackStillHasTranscript() {
         let base = fixture()
         let noFeedback = SessionDetail(session: base.session, company: base.company,

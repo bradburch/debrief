@@ -12,6 +12,7 @@ public enum SessionMarkdown {
 
         let stamp = DateFormatter()
         stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.timeZone = TimeZone(identifier: "UTC")
         stamp.dateFormat = "yyyy-MM-dd HH:mm"
         out += "- Date: \(stamp.string(from: s.date))\n"
         out += "- Duration: \(s.durationSeconds / 60) min\n"
@@ -62,6 +63,7 @@ public enum SessionMarkdown {
     public static func filename(for detail: SessionDetail) -> String {
         let day = DateFormatter()
         day.locale = Locale(identifier: "en_US_POSIX")
+        day.timeZone = TimeZone(identifier: "UTC")
         day.dateFormat = "yyyy-MM-dd"
         let date = day.string(from: detail.session.date)
         let company = slug(detail.company.name)
