@@ -11,12 +11,23 @@ private let logger = Logger(subsystem: "com.debrief.app", category: "datalocatio
 /// is the single place that mutates the filesystem to match it, and it runs while nothing
 /// holds the DB open (which is why moving the DB here is safe and moving it live is not).
 enum DataLocations {
-    enum MigrationError: Error { case targetNotEmpty(URL) }
+    enum MigrationError: Error, LocalizedError {
+        case targetNotEmpty(URL)
+
+        var errorDescription: String? {
+            switch self {
+            case .targetNotEmpty(let url):
+                return "The folder “\(url.path)” already contains files. Choose an empty folder or a new location."
+            }
+        }
+    }
 
     struct Resolved { let audio: URL; let db: URL; let prompts: URL }
 
-    /// (desiredKey, actualKey, errorKey, canonical subdir name, default full dir)
-    private struct Kind {
+    /// One relocatable data kind: the UserDefaults keys that declare its desired/actual
+    /// location and hold the last move error, plus the default full directory used when no
+    /// desired/actual is stored. (`internal`, not `private`, so tests can drive `reconcile`.)
+    struct Kind {
         let desiredKey: String, actualKey: String, errorKey: String, defaultDir: URL
     }
 
@@ -39,7 +50,7 @@ enum DataLocations {
     /// Returns the directory to actually use this launch. On a successful move, adopts `desired`
     /// and records it as `actual`; on failure, keeps `actual`, records an error for Settings to
     /// show, and leaves `desired` set so the move is retried next launch.
-    private static func reconcile(_ kind: Kind, defaults: UserDefaults, fm: FileManager) -> URL {
+    static func reconcile(_ kind: Kind, defaults: UserDefaults, fm: FileManager) -> URL {
         let desired = defaults.string(forKey: kind.desiredKey).map(URL.init(fileURLWithPath:)) ?? kind.defaultDir
         let actual = defaults.string(forKey: kind.actualKey).map(URL.init(fileURLWithPath:)) ?? kind.defaultDir
         guard desired != actual else { defaults.removeObject(forKey: kind.errorKey); return actual }
@@ -63,7 +74,10 @@ enum DataLocations {
         if from == to { return }
         guard fm.fileExists(atPath: from.path) else { return }
         if fm.fileExists(atPath: to.path) {
-            let contents = (try? fm.contentsOfDirectory(atPath: to.path)) ?? []
+            // Propagate a listing failure rather than swallowing it: an undeterminable target
+            // must be REFUSED (throw), never assumed empty and removed. `try?` here would let a
+            // target we can't inspect fall through to `removeItem` and be deleted.
+            let contents = try fm.contentsOfDirectory(atPath: to.path)
             if !contents.isEmpty { throw MigrationError.targetNotEmpty(to) }
             try fm.removeItem(at: to) // empty dir — clear it so moveItem can create it fresh
         }
