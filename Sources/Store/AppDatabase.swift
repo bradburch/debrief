@@ -64,6 +64,42 @@ public final class AppDatabase: Sendable {
                 t.add(column: "customInstructions", .text).notNull().defaults(to: "")
             }
         }
+        // The advance/no-advance verdict, elicited from the LLM rather than derived from
+        // overallScore. Empty string = feedback written before v3; the UI reads that as
+        // "no verdict" and Settings → "Re-run debriefs on current rubric" backfills it.
+        m.registerMigration("v3") { db in
+            try db.alter(table: "feedback") { t in
+                t.add(column: "advancement", .text).notNull().defaults(to: "")
+                t.add(column: "advancementRationale", .text).notNull().defaults(to: "")
+            }
+        }
+        // What the interviewer said about process/next steps/timeline, as [{t,note}] JSON.
+        // Defaults to "[]" (not "") so every row decodes as a valid empty list — pre-v4 rows
+        // are then indistinguishable in shape from "the topic never came up", which is what
+        // they are until re-coached.
+        m.registerMigration("v4") { db in
+            try db.alter(table: "feedback") { t in
+                t.add(column: "processNotesJSON", .text).notNull().defaults(to: "[]")
+            }
+        }
+        // Retroactively apply the insertSegments cleaning to rows written before it existed.
+        // Runs the same TranscriptArtifacts rules rather than SQL LIKEs, so the stored
+        // transcript and future writes can't drift apart. Safe to lose a segment here: the
+        // WAV chunks remain the source of truth, and these carry no speech by definition.
+        m.registerMigration("v5") { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT id, text FROM transcriptSegment")
+            for row in rows {
+                let id: Int64 = row["id"]
+                let original: String = row["text"]
+                let cleaned = TranscriptArtifacts.clean(original)
+                if cleaned.isEmpty {
+                    try db.execute(sql: "DELETE FROM transcriptSegment WHERE id = ?", arguments: [id])
+                } else if cleaned != original {
+                    try db.execute(sql: "UPDATE transcriptSegment SET text = ? WHERE id = ?",
+                                   arguments: [cleaned, id])
+                }
+            }
+        }
         return m
     }
 }

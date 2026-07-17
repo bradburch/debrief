@@ -38,6 +38,31 @@ public enum Speaker: String, Codable, Sendable { case you = "YOU", them = "THEM"
 
 public enum CoachingStatus: String, Codable, Sendable { case pending, complete, failed }
 
+/// The interviewer's would-I-advance call — the headline signal of a debrief.
+///
+/// Deliberately has no neutral case: a four-point forced choice, mirroring the discrete
+/// ordinal recommendations real scorecards record (interviewing.io's yes/no advance,
+/// Amazon's Strongly Inclined → Strongly Not Inclined). The LLM is asked for this
+/// directly and told NOT to derive it from the dimension scores — real scorecards
+/// co-record the verdict and the ratings rather than computing one from the other.
+public enum Advancement: String, Codable, Equatable, Sendable, CaseIterable {
+    case strongNo = "strong_no"
+    case leanNo = "lean_no"
+    case leanYes = "lean_yes"
+    case strongYes = "strong_yes"
+
+    public var displayName: String {
+        switch self {
+        case .strongNo: return "Strong No"
+        case .leanNo: return "Lean No"
+        case .leanYes: return "Lean Yes"
+        case .strongYes: return "Strong Yes"
+        }
+    }
+
+    public var advances: Bool { self == .leanYes || self == .strongYes }
+}
+
 public struct Company: Codable, Identifiable, Equatable, Sendable, FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "company"
     public var id: Int64?
@@ -91,11 +116,26 @@ public struct FeedbackRecord: Codable, Equatable, Sendable, FetchableRecord, Mut
     public var highlightsJSON: String
     public var actionItemsJSON: String
     public var overallScore: Double
+    /// Raw rather than `Advancement` so a pre-v3 row's "" round-trips instead of
+    /// failing to decode. Read it through `advancementValue`.
+    public var advancement: String
+    public var advancementRationale: String
+    /// [{t,note}] JSON — process/next-steps/timeline the interviewer mentioned. "[]" for
+    /// pre-v4 rows and whenever the topic never came up.
+    public var processNotesJSON: String
+
+    /// nil for feedback written before the verdict existed (migration v3).
+    public var advancementValue: Advancement? { Advancement(rawValue: advancement) }
+
     public init(id: Int64?, sessionId: Int64, proseDebrief: String, scoresJSON: String,
-                highlightsJSON: String, actionItemsJSON: String, overallScore: Double) {
+                highlightsJSON: String, actionItemsJSON: String, overallScore: Double,
+                advancement: String = "", advancementRationale: String = "",
+                processNotesJSON: String = "[]") {
         self.id = id; self.sessionId = sessionId; self.proseDebrief = proseDebrief
         self.scoresJSON = scoresJSON; self.highlightsJSON = highlightsJSON
         self.actionItemsJSON = actionItemsJSON; self.overallScore = overallScore
+        self.advancement = advancement; self.advancementRationale = advancementRationale
+        self.processNotesJSON = processNotesJSON
     }
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }

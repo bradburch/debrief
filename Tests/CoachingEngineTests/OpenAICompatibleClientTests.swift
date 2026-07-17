@@ -1,5 +1,6 @@
 import XCTest
 @testable import CoachingEngine
+import Store
 
 final class OpenAICompatibleClientTests: XCTestCase {
     func makeClient(apiKey: String = "") -> OpenAICompatibleClient {
@@ -10,22 +11,25 @@ final class OpenAICompatibleClientTests: XCTestCase {
                                       session: URLSession(configuration: config))
     }
 
+    /// The round's scored dimensions. Arbitrary here — the client's contract is "require
+    /// exactly the keys you were handed", not any particular set.
+    static let dims = ["answer_relevance", "structure", "conciseness", "questions_asked"]
+
     static let goodJSON = """
     {"prose_debrief":"Solid.","scores":{"answer_relevance":4,"structure":3,"conciseness":3,"questions_asked":2},
-     "weakness_tags":[],"highlights":[{"t":"00:05:10","note":"good {question}"}],"action_items":["Prep"]}
+     "advancement":"lean_no","advancement_rationale":"Never landed a result.",
+     "weakness_tags":[],"highlights":[{"t":"00:05:10","note":"good {question}"}],"action_items":["Prep"],"process_notes":[]}
     """
 
-    // The format appendix's illustrative example object, verbatim — a weak
-    // local model may echo this instead of following it.
-    static let exampleObjectJSON = """
-    {
-      "prose_debrief": "The 300-600 word markdown debrief.",
-      "scores": {"answer_relevance": 4, "structure": 3, "conciseness": 3, "questions_asked": 2},
-      "weakness_tags": ["rambling_intro"],
-      "highlights": [{"t": "00:14:32", "note": "Strong recovery after the hint"}],
-      "action_items": ["Prep a 90-second intro"]
-    }
-    """
+    // The format appendix's illustrative example object — a weak local model may echo this
+    // instead of following it. Built from the real appendix so it stays in sync: if the
+    // example's shape drifts, this fixture drifts with it.
+    static let exampleObjectJSON: String = {
+        let appendix = OpenAICompatibleClient.formatAppendix(dimensions: dims)
+        return OpenAICompatibleClient.candidateObjects(in: appendix)
+            .compactMap { String(data: $0, encoding: .utf8) }
+            .first { $0.contains(OpenAICompatibleClient.exampleProse) }!
+    }()
 
     func envelope(content: String) -> Data {
         try! JSONSerialization.data(withJSONObject:
@@ -45,7 +49,7 @@ final class OpenAICompatibleClientTests: XCTestCase {
             XCTAssertEqual(messages[1], ["role": "user", "content": "transcript"])
             return (200, self.envelope(content: Self.goodJSON))
         }
-        let result = try await makeClient().generateCoaching(systemPrompt: "coach", userMessage: "transcript")
+        let result = try await makeClient().generateCoaching(systemPrompt: "coach", userMessage: "transcript", dimensions: Self.dims)
         XCTAssertEqual(result.proseDebrief, "Solid.")
         XCTAssertEqual(result.scores["answer_relevance"], 4)
     }
@@ -55,20 +59,20 @@ final class OpenAICompatibleClientTests: XCTestCase {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-local")
             return (200, self.envelope(content: Self.goodJSON))
         }
-        _ = try await makeClient(apiKey: "sk-local").generateCoaching(systemPrompt: "s", userMessage: "u")
+        _ = try await makeClient(apiKey: "sk-local").generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
     }
 
     func testParsesThinkBlocksAndFences() async throws {
         let wrapped = "<think>hmm {not: json}</think>\nHere you go:\n```json\n\(Self.goodJSON)\n```"
         MockURLProtocol.handler = { _ in (200, self.envelope(content: wrapped)) }
-        let result = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+        let result = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
         XCTAssertEqual(result.highlights.first?.note, "good {question}")  // braces inside strings survive
     }
 
     func testGarbageContentThrowsEmptyResponse() async {
         MockURLProtocol.handler = { _ in (200, self.envelope(content: "I cannot produce JSON, sorry.")) }
         do {
-            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
             XCTFail("expected throw")
         } catch let e as ClaudeError { XCTAssertEqual(e, .emptyResponse) } catch { XCTFail("\(error)") }
     }
@@ -76,7 +80,7 @@ final class OpenAICompatibleClientTests: XCTestCase {
     func testHTTPErrorThrows() async {
         MockURLProtocol.handler = { _ in (500, Data("model not found".utf8)) }
         do {
-            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
             XCTFail("expected throw")
         } catch let e as ClaudeError { XCTAssertEqual(e, .httpStatus(500, body: "model not found")) }
         catch { XCTFail("\(error)") }
@@ -93,7 +97,7 @@ final class OpenAICompatibleClientTests: XCTestCase {
         \(Self.goodJSON)
         """
         MockURLProtocol.handler = { _ in (200, self.envelope(content: content)) }
-        let result = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+        let result = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
         XCTAssertEqual(result.proseDebrief, "Solid.")
     }
 
@@ -103,9 +107,46 @@ final class OpenAICompatibleClientTests: XCTestCase {
         // fail loudly rather than silently persist the fabricated example.
         MockURLProtocol.handler = { _ in (200, self.envelope(content: Self.exampleObjectJSON)) }
         do {
-            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
             XCTFail("expected throw")
         } catch let e as ClaudeError { XCTAssertEqual(e, .emptyResponse) } catch { XCTFail("\(error)") }
+    }
+
+    func testWrongScoreKeysRejected() async {
+        // scores is [String: Int], so a model returning its own dimensions still DECODES.
+        // Nothing but this guard catches it, and accepting it would average dimensions the
+        // round never asked for into overallScore.
+        MockURLProtocol.handler = { _ in (200, self.envelope(content: Self.goodJSON)) }
+        do {
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u",
+                                                        dimensions: ["correctness", "problem_solving"])
+            XCTFail("expected throw")
+        } catch let e as ClaudeError { XCTAssertEqual(e, .emptyResponse) } catch { XCTFail("\(error)") }
+    }
+
+    func testOutOfBandScoresRejected() async {
+        // A real debrief in the production DB was saved as all-zeros → a 0.0 mean shown as a
+        // legitimate result. Neither client's transport enforces the 1-5 band (the API refuses
+        // range keywords; local servers get no schema), so the decoder is the only guard.
+        let zeros = """
+        {"prose_debrief":"Zeroed.","scores":{"answer_relevance":0,"structure":0,"conciseness":0,"questions_asked":0},
+         "advancement":"strong_no","advancement_rationale":"r","weakness_tags":[],
+         "highlights":[{"t":"00:00:01","note":"n"}],"action_items":["a"],"process_notes":[]}
+        """
+        MockURLProtocol.handler = { _ in (200, self.envelope(content: zeros)) }
+        do {
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
+            XCTFail("expected throw — a 0 score must not persist")
+        } catch let e as ClaudeError { XCTAssertEqual(e, .emptyResponse) } catch { XCTFail("\(error)") }
+    }
+
+    func testFormatAppendixListsTheRoundsDimensions() {
+        let appendix = OpenAICompatibleClient.formatAppendix(dimensions: ["correctness", "qa_honesty"])
+        XCTAssertTrue(appendix.contains("\"correctness\""))
+        XCTAssertTrue(appendix.contains("\"qa_honesty\""))
+        XCTAssertFalse(appendix.contains("answer_relevance"), "must not leak a hardcoded dimension set")
+        // The verdict's legal values have to reach a server that gets no JSON schema.
+        for a in Advancement.allCases { XCTAssertTrue(appendix.contains(a.rawValue), a.rawValue) }
     }
 
     func testCandidateObjectsEdgeCases() {

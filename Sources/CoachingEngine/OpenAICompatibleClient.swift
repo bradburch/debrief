@@ -1,4 +1,5 @@
 import Foundation
+import Store
 
 /// Coaching via any OpenAI-compatible /chat/completions server: Ollama,
 /// LM Studio, llama.cpp, or remote providers like DeepSeek cloud.
@@ -25,29 +26,46 @@ public struct OpenAICompatibleClient: CoachingLLM {
     /// decoded candidate whose prose still equals this exact sentinel.
     static let exampleProse = "The 300-600 word markdown debrief."
 
-    static let formatAppendix = """
-    ## Output format (mandatory)
+    /// These servers can't be trusted with a JSON schema, so the same contract
+    /// AnthropicClient enforces via `outputSchema(dimensions:)` is enforced here as prose.
+    /// Both are built from the same `dimensions` argument — if you change one, change both.
+    static func formatAppendix(dimensions: [String]) -> String {
+        // Illustrative values only: vary them so a model that copies the example rather
+        // than reading the transcript produces an obviously-wrong flat profile.
+        let exampleScores = dimensions.enumerated()
+            .map { "\"\($0.element)\": \(([3, 4, 2, 3, 5, 2])[$0.offset % 6])" }
+            .joined(separator: ", ")
+        let keyList = dimensions.map { "\"\($0)\"" }.joined(separator: ", ")
+        return """
+        ## Output format (mandatory)
 
-    Respond with ONLY a single JSON object — no commentary, no text before or after it, and no code-fence wrapper around the object itself (do not wrap your reply in ```). Markdown formatting INSIDE the "prose_debrief" string is welcome.
+        Respond with ONLY a single JSON object — no commentary, no text before or after it, and no code-fence wrapper around the object itself (do not wrap your reply in ```). Markdown formatting INSIDE the "prose_debrief" string is welcome.
 
-    Example shape (values are illustrative, not defaults to copy):
+        Example shape (values are illustrative, not defaults to copy):
 
-    {
-      "prose_debrief": "\(exampleProse)",
-      "scores": {"answer_relevance": 4, "structure": 3, "conciseness": 3, "questions_asked": 2},
-      "weakness_tags": ["rambling_intro"],
-      "highlights": [{"t": "00:14:32", "note": "Strong recovery after the hint"}],
-      "action_items": ["Prep a 90-second intro"]
+        {
+          "prose_debrief": "\(exampleProse)",
+          "scores": {\(exampleScores)},
+          "advancement": "lean_no",
+          "advancement_rationale": "The one thing that decided it.",
+          "weakness_tags": ["rambling_intro"],
+          "highlights": [{"t": "00:14:32", "note": "Strong recovery after the hint"}],
+          "action_items": ["Prep a 90-second intro"],
+          "process_notes": [{"t": "00:41:05", "note": "Two more rounds; system design next, then a panel. Decision by Friday."}]
+        }
+
+        Rules:
+        - All eight top-level fields are required. "scores" must contain exactly these \(dimensions.count) keys — \(keyList) — with integer values 1-5, and no other keys.
+        - "advancement" must be exactly one of: \(Advancement.allCases.map { "\"\($0.rawValue)\"" }.joined(separator: ", ")). Decide it from the evidence, not by averaging "scores".
+        - "weakness_tags": use the exact snake_case spellings from the vocabulary above; do not invent or reword tags.
+        - "highlights" and "action_items": 2-5 items each. "t" is an "HH:MM:SS" timestamp from the transcript.
+        - "process_notes": 0-6 items, same {"t","note"} shape as highlights. Use [] when the interview process, next steps, and timeline never came up — [] is a correct answer, not a failure.
+        - Inside string values, escape quotation marks you quote from the transcript as \\\" and write line breaks as \\n.
+        """
     }
 
-    Rules:
-    - All five top-level fields are required. "scores" must contain exactly the 4 keys shown — integer values 1-5, no other keys.
-    - "weakness_tags": use the exact snake_case spellings from the vocabulary above; do not invent or reword tags.
-    - "highlights" and "action_items": 2-5 items each. "t" is an "HH:MM:SS" timestamp from the transcript.
-    - Inside string values, escape quotation marks you quote from the transcript as \\\" and write line breaks as \\n.
-    """
-
-    public func generateCoaching(systemPrompt: String, userMessage: String) async throws -> CoachingResult {
+    public func generateCoaching(systemPrompt: String, userMessage: String,
+                                 dimensions: [String]) async throws -> CoachingResult {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
         request.timeoutInterval = 600  // local inference on a long transcript is slow
@@ -58,7 +76,8 @@ public struct OpenAICompatibleClient: CoachingLLM {
         let body: [String: Any] = [
             "model": model,
             "messages": [
-                ["role": "system", "content": systemPrompt + "\n\n" + Self.formatAppendix],
+                ["role": "system",
+                 "content": systemPrompt + "\n\n" + Self.formatAppendix(dimensions: dimensions)],
                 ["role": "user", "content": userMessage],
             ],
             "stream": false,
@@ -89,7 +108,12 @@ public struct OpenAICompatibleClient: CoachingLLM {
         // sentinel text and keep scanning for the model's actual answer.
         for candidate in Self.candidateObjects(in: content) {
             if let result = try? decoder.decode(CoachingResult.self, from: candidate),
-               result.proseDebrief != Self.exampleProse {
+               result.proseDebrief != Self.exampleProse,
+               // scores is [String: Int], so decoding also succeeds for a model that
+               // ignored the key list and returned its own dimensions. Unlike the schema-
+               // enforced Anthropic path, nothing else here catches that — and it would
+               // silently average the wrong dimensions into overallScore.
+               Set(result.scores.keys) == Set(dimensions) {
                 return result
             }
         }

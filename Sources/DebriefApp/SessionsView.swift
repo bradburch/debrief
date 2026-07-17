@@ -4,12 +4,14 @@ import CoachingEngine
 
 struct SessionsView: View {
     @EnvironmentObject var env: AppEnvironment
-    @State private var rows: [(session: InterviewSession, companyName: String, overallScore: Double?)] = []
+    @State private var rows: [(session: InterviewSession, companyName: String, overallScore: Double?, advancement: Advancement?)] = []
     @State private var selection: Set<Int64> = []
     @State private var confirmingDelete = false
     @State private var filterText = ""
+    /// Set when arriving from Pipeline; the List scrolls to it and clears it.
+    @State private var scrollToSession: Int64?
 
-    private var filteredRows: [(session: InterviewSession, companyName: String, overallScore: Double?)] {
+    private var filteredRows: [(session: InterviewSession, companyName: String, overallScore: Double?, advancement: Advancement?)] {
         let q = filterText.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return rows }
         return rows.filter { $0.companyName.localizedCaseInsensitiveContains(q) }
@@ -30,16 +32,32 @@ struct SessionsView: View {
                     if filteredRows.isEmpty {
                         ContentUnavailableView.search(text: filterText)
                     } else {
+                        ScrollViewReader { proxy in
                         List(selection: $selection) {
                             ForEach(filteredRows, id: \.session.id) { row in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    HStack {
+                                    HStack(spacing: 6) {
                                         Text(row.companyName).bold()
                                         Spacer()
+                                        // Verdict is the headline; the mean rides alongside as a
+                                        // trend signal. Pre-v3 debriefs have no verdict and show
+                                        // the score alone until re-coached.
+                                        if let advancement = row.advancement {
+                                            Text(advancement.displayName)
+                                                .font(.caption).bold()
+                                                .foregroundStyle(Color.forAdvancement(advancement))
+                                        }
                                         if let score = row.overallScore {
                                             Text(String(format: "%.1f", score)).monospacedDigit()
-                                                .foregroundStyle(Color.forScore(score))
-                                        } else {
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        // Show the badge whenever coaching isn't complete, not
+                                        // just when there's no score: a re-coach that fails on
+                                        // an already-complete session leaves the stale feedback
+                                        // row behind, so keying on `overallScore == nil` hid
+                                        // the failure entirely and showed the old score as if
+                                        // it were fresh.
+                                        if row.session.coachingStatus != .complete {
                                             statusBadge(row.session.coachingStatus)
                                         }
                                     }
@@ -62,6 +80,17 @@ struct SessionsView: View {
                             Button("Delete", role: .destructive, action: deleteSelected)
                             Button("Cancel", role: .cancel) {}
                         }
+                        // `task(id:)`, not `onChange`: this List only exists once `rows` is
+                        // non-empty, so on a Pipeline reveal it is built AFTER
+                        // revealPendingSession() already set scrollToSession — an onChange
+                        // installed here would never observe a change and never fire.
+                        // task(id:) runs on appear too, which is the case that matters.
+                        .task(id: scrollToSession) {
+                            guard let target = scrollToSession else { return }
+                            proxy.scrollTo(target, anchor: .center)
+                            scrollToSession = nil
+                        }
+                        }
                     }
                 }
             }
@@ -82,11 +111,25 @@ struct SessionsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear(perform: reload)
+        .onAppear {
+            reload()
+            revealPendingSession()
+        }
         .onReceive(env.coordinator.$phase) { if case .idle = $0 { reload() } }
     }
 
     private func reload() { rows = (try? env.db.allSessionSummaries()) ?? [] }
+
+    /// Selects the session Pipeline asked for. MUST run after `reload()`: the
+    /// `onChange(of: filteredRows…)` above intersects `selection` with the visible rows, so
+    /// selecting against a still-empty `rows` would be wiped the moment they load.
+    private func revealPendingSession() {
+        guard let id = env.sessionToReveal else { return }
+        env.sessionToReveal = nil
+        guard rows.contains(where: { $0.session.id == id }) else { return }
+        selection = [id]
+        scrollToSession = id
+    }
 
     private var deleteTitle: String {
         selection.count == 1 ? "Delete this session? This can’t be undone."
@@ -222,11 +265,54 @@ struct SessionDetailView: View {
                     }
                 }
                 if let f = d.feedback {
+                    if let advancement = f.advancementValue {
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(advancement.displayName).font(.title2).bold()
+                                        .foregroundStyle(Color.forAdvancement(advancement))
+                                    Spacer()
+                                    Text(String(format: "%.1f avg", f.overallScore))
+                                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                }
+                                if !f.advancementRationale.isEmpty {
+                                    Text(f.advancementRationale)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
                     if !d.tags.isEmpty {
                         HStack {
                             ForEach(d.tags, id: \.self) { tag in
                                 Text(tag).font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
                                     .background(.red.opacity(0.15), in: Capsule())
+                            }
+                        }
+                    }
+                    // Above Highlights and the prose: what happens next is the most
+                    // actionable thing in a debrief, and it's what you come back for.
+                    if let notes = try? JSONDecoder().decode([Highlight].self,
+                                                             from: f.processNotesJSON.data(using: .utf8)!),
+                       !notes.isEmpty {
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label("Process & next steps", systemImage: "signpost.right.fill")
+                                    .font(.headline).foregroundStyle(.blue)
+                                // Index, not `t`: two notes can legitimately share a timestamp
+                                // (the model quotes one moment twice), and a duplicate ForEach
+                                // id drops rows and scrambles them.
+                                ForEach(Array(notes.enumerated()), id: \.offset) { _, n in
+                                    Button {
+                                        scrollTarget = parseTimestamp(n.t)
+                                    } label: {
+                                        HStack(alignment: .top) {
+                                            Text(n.t).monospacedDigit().foregroundStyle(.blue)
+                                            Text(n.note).frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }.buttonStyle(.plain)
+                                }
                             }
                         }
                     }

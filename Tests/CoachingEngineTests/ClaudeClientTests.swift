@@ -23,10 +23,13 @@ final class ClaudeClientTests: XCTestCase {
         return AnthropicClient(apiKey: "test-key", session: URLSession(configuration: config))
     }
 
+    static let dims = ["answer_relevance", "structure", "conciseness", "questions_asked"]
+
     static let goodPayload = """
     {"prose_debrief":"Good interview.","scores":{"answer_relevance":4,"structure":2,"conciseness":3,"questions_asked":4},
+     "advancement":"lean_yes","advancement_rationale":"Recovered well after the hint.",
      "weakness_tags":["rambling_intro"],"highlights":[{"t":"00:14:22","note":"Strong recovery"}],
-     "action_items":["Prep a 90 second intro"]}
+     "action_items":["Prep a 90 second intro"],"process_notes":[]}
     """
 
     func envelope(text: String, stopReason: String = "end_turn") -> Data {
@@ -48,7 +51,7 @@ final class ClaudeClientTests: XCTestCase {
             XCTAssertNotNil((body["output_config"] as? [String: Any])?["format"])
             return (200, self.envelope(text: Self.goodPayload))
         }
-        let result = try await makeClient().generateCoaching(systemPrompt: "coach", userMessage: "transcript")
+        let result = try await makeClient().generateCoaching(systemPrompt: "coach", userMessage: "transcript", dimensions: Self.dims)
         XCTAssertEqual(result.proseDebrief, "Good interview.")
         XCTAssertEqual(result.scores["structure"], 2)
         XCTAssertEqual(result.weaknessTags, ["rambling_intro"])
@@ -59,7 +62,7 @@ final class ClaudeClientTests: XCTestCase {
     func testRefusalThrows() async {
         MockURLProtocol.handler = { _ in (200, self.envelope(text: "", stopReason: "refusal")) }
         do {
-            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
             XCTFail("expected throw")
         } catch let e as ClaudeError { XCTAssertEqual(e, .refusal) } catch { XCTFail("\(error)") }
     }
@@ -67,7 +70,7 @@ final class ClaudeClientTests: XCTestCase {
     func testHTTPErrorThrows() async {
         MockURLProtocol.handler = { _ in (429, Data("rate limited".utf8)) }
         do {
-            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
             XCTFail("expected throw")
         } catch let e as ClaudeError {
             XCTAssertEqual(e, .httpStatus(429, body: "rate limited"))
@@ -77,7 +80,7 @@ final class ClaudeClientTests: XCTestCase {
     func testMaxTokensThrowsTruncated() async {
         MockURLProtocol.handler = { _ in (200, self.envelope(text: "{", stopReason: "max_tokens")) }
         do {
-            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u")
+            _ = try await makeClient().generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
             XCTFail("expected throw")
         } catch let e as ClaudeError { XCTAssertEqual(e, .truncated) } catch { XCTFail("\(error)") }
     }
@@ -92,7 +95,7 @@ final class ClaudeClientTests: XCTestCase {
             XCTAssertEqual(body["model"] as? String, "claude-sonnet-5")
             return (200, self.envelope(text: Self.goodPayload))
         }
-        _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u")
+        _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
     }
 
     func testThinkingConfigMatchesModelCapability() async throws {
@@ -107,7 +110,7 @@ final class ClaudeClientTests: XCTestCase {
                 captured = body["thinking"] as! [String: Any]
                 return (200, self.envelope(text: Self.goodPayload))
             }
-            _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u")
+            _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u", dimensions: Self.dims)
             return captured
         }
         // Adaptive-capable 4.6+ models send adaptive thinking.

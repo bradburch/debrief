@@ -10,10 +10,21 @@ public struct ScorePoint: Equatable, Sendable {
 }
 public struct SessionSummary: Equatable, Sendable, Identifiable {
     public let id: Int64; public let roundType: RoundType; public let date: Date; public let overallScore: Double?
+    /// nil for a debrief written before the verdict existed, or not yet coached.
+    public let advancement: Advancement?
 }
 public struct CompanyPipeline: Equatable, Sendable, Identifiable {
     public var id: Int64 { company.id ?? 0 }
     public let company: Company; public let sessions: [SessionSummary]
+    /// Process/next-steps notes across ALL of this company's sessions, newest round first.
+    /// Kept as raw JSON because decoding needs `Highlight`, which lives in CoachingEngine —
+    /// Store can't import it, and the views already decode highlightsJSON the same way.
+    public let processNotesJSON: [(roundType: RoundType, date: Date, json: String)]
+
+    public static func == (a: CompanyPipeline, b: CompanyPipeline) -> Bool {
+        a.company == b.company && a.sessions == b.sessions
+            && a.processNotesJSON.map(\.json) == b.processNotesJSON.map(\.json)
+    }
 }
 public struct SessionDetail: Sendable {
     public let session: InterviewSession
@@ -81,8 +92,25 @@ extension AppDatabase {
         try dbWriter.write { db in var s = s; try s.insert(db); return s }
     }
 
-    public func insertSegments(_ segs: [TranscriptSegmentRecord]) throws {
-        try dbWriter.write { db in for var seg in segs { try seg.insert(db) } }
+    /// Strips Whisper's non-speech markers and drops segments that were nothing else, so the
+    /// transcript table holds speech only. Done here rather than at the call site because both
+    /// the live-stop and crash-recovery paths funnel through it — see TranscriptArtifacts.
+    ///
+    /// Returns the number of rows actually written, which can be 0 even for a non-empty input
+    /// (a recording whose every segment was `[BLANK_AUDIO]`). Callers must not assume the
+    /// input count — a session with no transcript still gets coached, and the LLM will
+    /// confabulate a debrief for an interview it cannot see.
+    @discardableResult
+    public func insertSegments(_ segs: [TranscriptSegmentRecord]) throws -> Int {
+        let cleaned = segs.compactMap { seg -> TranscriptSegmentRecord? in
+            let text = TranscriptArtifacts.clean(seg.text)
+            guard !text.isEmpty else { return nil }
+            var seg = seg
+            seg.text = text
+            return seg
+        }
+        try dbWriter.write { db in for var seg in cleaned { try seg.insert(db) } }
+        return cleaned.count
     }
 
     public func deleteSession(id: Int64) throws {
@@ -112,6 +140,18 @@ extension AppDatabase {
         try dbWriter.read { db in
             try InterviewSession
                 .filter(Column("coachingStatus") != "complete")
+                .filter(sql: "id IN (SELECT DISTINCT sessionId FROM transcriptSegment)")
+                .order(Column("date"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Every session with a transcript, including ones already coached — the re-coach path.
+    /// A rubric change only reaches existing debriefs by re-running them, since feedback is
+    /// written once at finalize.
+    public func sessionsWithTranscript() throws -> [InterviewSession] {
+        try dbWriter.read { db in
+            try InterviewSession
                 .filter(sql: "id IN (SELECT DISTINCT sessionId FROM transcriptSegment)")
                 .order(Column("date"))
                 .fetchAll(db)
@@ -168,29 +208,41 @@ extension AppDatabase {
             let companies = try Company.order(Column("name")).fetchAll(db)
             return try companies.map { co in
                 let rows = try Row.fetchAll(db, sql: """
-                    SELECT s.id AS id, s.roundType AS roundType, s.date AS date, f.overallScore AS overallScore
+                    SELECT s.id AS id, s.roundType AS roundType, s.date AS date,
+                           f.overallScore AS overallScore, f.advancement AS advancement,
+                           f.processNotesJSON AS processNotesJSON
                     FROM session s LEFT JOIN feedback f ON f.sessionId = s.id
                     WHERE s.companyId = ? ORDER BY s.date
                     """, arguments: [co.id])
                 let sessions = rows.map { row in
                     SessionSummary(id: row["id"], roundType: RoundType(rawValue: row["roundType"]),
-                                   date: row["date"], overallScore: row["overallScore"])
+                                   date: row["date"], overallScore: row["overallScore"],
+                                   advancement: (row["advancement"] as String?).flatMap(Advancement.init))
                 }
-                return CompanyPipeline(company: co, sessions: sessions)
+                // Newest round first: the latest thing said about the process is the one that
+                // still applies. "[]" and NULL (uncoached session) both mean nothing to show.
+                let notes = rows.reversed().compactMap { row -> (RoundType, Date, String)? in
+                    guard let json: String = row["processNotesJSON"], json != "[]", !json.isEmpty else { return nil }
+                    return (RoundType(rawValue: row["roundType"]), row["date"], json)
+                }
+                return CompanyPipeline(company: co, sessions: sessions, processNotesJSON: notes)
             }
         }
     }
 
-    public func allSessionSummaries() throws -> [(session: InterviewSession, companyName: String, overallScore: Double?)] {
+    public func allSessionSummaries() throws
+        -> [(session: InterviewSession, companyName: String, overallScore: Double?, advancement: Advancement?)] {
         try dbWriter.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT s.*, c.name AS companyName, f.overallScore AS feedbackScore
+                SELECT s.*, c.name AS companyName, f.overallScore AS feedbackScore,
+                       f.advancement AS advancement
                 FROM session s
                 JOIN company c ON c.id = s.companyId
                 LEFT JOIN feedback f ON f.sessionId = s.id
                 ORDER BY s.date DESC
                 """)
-            return try rows.map { (try InterviewSession(row: $0), $0["companyName"], $0["feedbackScore"]) }
+            return try rows.map { (try InterviewSession(row: $0), $0["companyName"], $0["feedbackScore"],
+                                   ($0["advancement"] as String?).flatMap(Advancement.init)) }
         }
     }
 

@@ -15,6 +15,18 @@ public struct SessionMetadata: Sendable {
     }
 }
 
+public enum FinalizeError: LocalizedError, Equatable {
+    /// Every transcribed segment was non-speech, so there is nothing to coach on.
+    case noSpeechInRecording
+
+    public var errorDescription: String? {
+        switch self {
+        case .noSpeechInRecording:
+            return "no speech was transcribed (check the mic and system-audio permissions)"
+        }
+    }
+}
+
 public enum RecordingPhase: Equatable, Sendable {
     case idle
     case recording(started: Date)
@@ -240,11 +252,18 @@ public final class RecordingCoordinator: ObservableObject {
                 durationSeconds: durationSeconds,
                 contextNotes: metadata.notes, coachingStatus: .pending))
             insertedSessionId = session.id
-            try db.insertSegments(lines.map { line in
+            let inserted = try db.insertSegments(lines.map { line in
                 TranscriptSegmentRecord(id: nil, sessionId: session.id!,
                                         speaker: line.speaker == .you ? .you : .them,
                                         tStart: line.start, text: line.text)
             })
+            // insertSegments drops non-speech, so `lines` being non-empty does not mean any
+            // row landed — a call recorded with the mic muted transcribes to nothing but
+            // [BLANK_AUDIO]. Throwing routes into the catch below, which deletes the orphaned
+            // session and keeps the audio. Without this the session persists with an empty
+            // transcript and still gets coached, and the LLM invents a debrief for an
+            // interview it never saw.
+            guard inserted > 0 else { throw FinalizeError.noSpeechInRecording }
             segmentsInserted = true
             try RecordingStore.writeManifest(.init(startedAt: startedAt, finalized: true), in: dir)
             if deleteAudioOnSuccess { try? RecordingStore.deleteSession(at: dir) }
