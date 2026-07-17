@@ -60,6 +60,7 @@ public final class RecordingCoordinator: ObservableObject {
     private let recordingsRoot: URL
     private let chunkDuration: TimeInterval
     private let deleteAudioOnSuccess: Bool
+    private let exportDirectory: @Sendable () -> URL?
 
     private var sessionDir: URL?
     private var micWriter: WavChunkWriter?
@@ -78,12 +79,17 @@ public final class RecordingCoordinator: ObservableObject {
                 makeSystemRecorder: @escaping (WavChunkWriter) -> StreamRecorder,
                 recordingsRoot: URL = RecordingStore.recordingsRoot(),
                 chunkDuration: TimeInterval = 30,
-                deleteAudioOnSuccess: Bool = true) {
+                deleteAudioOnSuccess: Bool = true,
+                exportDirectory: @escaping @Sendable () -> URL? = {
+                    guard let p = UserDefaults.standard.string(forKey: "exportDirectory"), !p.isEmpty else { return nil }
+                    return URL(fileURLWithPath: p)
+                }) {
         self.db = db; self.coaching = coaching
         self.transcriber = transcriber
         self.makeMicRecorder = makeMicRecorder; self.makeSystemRecorder = makeSystemRecorder
         self.recordingsRoot = recordingsRoot; self.chunkDuration = chunkDuration
         self.deleteAudioOnSuccess = deleteAudioOnSuccess
+        self.exportDirectory = exportDirectory
     }
 
     public func startRecording() async {
@@ -270,6 +276,12 @@ public final class RecordingCoordinator: ObservableObject {
 
             phase = .finalizing(status: "Coaching…")
             try? await coaching.coach(sessionId: session.id!)  // failure leaves session retryable
+
+            // Export a Cowork-readable markdown copy if an export folder is configured.
+            // Non-fatal, same contract as coaching above: a failed export never fails finalize.
+            if let exportDir = exportDirectory() {
+                try? coaching.exportSession(id: session.id!, to: exportDir)
+            }
 
             phase = .idle
             return session.id

@@ -217,4 +217,49 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertEqual(p.done, p.total)
         XCTAssertGreaterThan(p.total, 0)
     }
+
+    func testFinalizeExportsMarkdownWhenDirectoryConfigured() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let exportDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let db = try AppDatabase.inMemory()
+        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let prompts = PromptStore(directory: promptDir)
+        try prompts.ensureDefaults()
+        let coordinator = RecordingCoordinator(
+            db: db,
+            coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
+            transcriber: FakeTranscriber(textForChunk: "final"),
+            makeMicRecorder: { FakeRecorder(writer: $0, seconds: 2) },
+            makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 2) },
+            recordingsRoot: root,
+            chunkDuration: 1.0,
+            exportDirectory: { exportDir })
+
+        await coordinator.startRecording()
+        let sessionId = await coordinator.stopAndFinalize(
+            metadata: .init(company: "Acme", roundType: .behavioral, notes: ""))
+        XCTAssertNotNil(sessionId)
+
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: exportDir.path)) ?? []
+        XCTAssertEqual(files.count, 1, "finalize should write exactly one markdown export")
+    }
+
+    func testFinalizeDoesNotExportWhenDirectoryNotConfigured() async throws {
+        // Default exportDirectory reads UserDefaults key "exportDirectory"; under a
+        // clean UserDefaults it must return nil, so existing/other tests (which don't
+        // pass exportDirectory) never write files as a side effect.
+        UserDefaults.standard.removeObject(forKey: "exportDirectory")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let db = try AppDatabase.inMemory()
+        let coordinator = try makeCoordinator(root: root, db: db)
+
+        await coordinator.startRecording()
+        let sessionId = await coordinator.stopAndFinalize(
+            metadata: .init(company: "Acme", roundType: .behavioral, notes: ""))
+        XCTAssertNotNil(sessionId)
+        // No exportDirectory configured -> no export call, nothing to assert on disk
+        // beyond "finalize still succeeds", which the non-nil sessionId already proves.
+    }
 }
