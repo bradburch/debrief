@@ -82,11 +82,23 @@ final class AppEnvironment: ObservableObject {
 
     func cancelRecoach() { recoachTask?.cancel() }
 
+    /// Result of the last "Export all now" / folder-picked backfill run, surfaced in Settings.
+    /// nil until a batch export has completed at least once.
+    @Published var exportResult: String?
+
     /// Exports every session with a transcript to `dir`, off the main thread (many small
-    /// file writes). Fire-and-forget: the folder picker is the user-facing confirmation.
+    /// file writes). Publishes the outcome to `exportResult` rather than discarding it, so a
+    /// failed batch (e.g. an unwritable folder) doesn't silently look like success.
     func exportAllSessions(to dir: URL) {
         let coaching = self.coaching
-        Task.detached { _ = coaching.exportAll(to: dir) }
+        Task.detached { [self] in
+            let errors = coaching.exportAll(to: dir)
+            await MainActor.run {
+                self.exportResult = errors.isEmpty
+                    ? "Export complete."
+                    : "Export finished with \(errors.count) error(s) — check the folder is writable."
+            }
+        }
     }
 
     static func outcome(total: Int, failed: Int, cancelled: Bool, completed: Int) -> RecoachOutcome {

@@ -10,6 +10,10 @@ private let logger = Logger(subsystem: "com.debrief.app", category: "datalocatio
 /// store opens. "Declared vs. reconciled state": Settings declares a desired directory; this
 /// is the single place that mutates the filesystem to match it, and it runs while nothing
 /// holds the DB open (which is why moving the DB here is safe and moving it live is not).
+/// That "nothing holds the DB open" assumption is enforced across the relaunch handoff by the
+/// Settings gate (`SettingsView.canRelocate`): a relocation can only be *initiated* when the
+/// old instance is idle (not recording/finalizing) and not re-coaching, so no writer is left
+/// racing this move when the new instance reconciles at launch.
 enum DataLocations {
     enum MigrationError: Error, LocalizedError {
         case targetNotEmpty(URL)

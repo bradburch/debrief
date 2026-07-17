@@ -33,6 +33,19 @@ final class CoachingExportTests: XCTestCase {
         XCTAssertTrue(contents.contains("Hello there."))
     }
 
+    func testExportSessionIsIdempotent() throws {
+        let db = try AppDatabase.inMemory()
+        let id = try seedSession(db, company: "Acme")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let service = makeService(db)
+
+        try service.exportSession(id: id, to: dir)
+        try service.exportSession(id: id, to: dir)
+
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        XCTAssertEqual(files.count, 1)
+    }
+
     func testExportAllWritesOnePerSession() throws {
         let db = try AppDatabase.inMemory()
         _ = try seedSession(db, company: "Acme")

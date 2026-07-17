@@ -30,6 +30,17 @@ struct SettingsView: View {
         !(ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? "").isEmpty
     }
 
+    // Gates data-location relocation: a relaunch runs DataLocations.resolveAndReconcile(),
+    // which MOVES the db directory before any store reopens. A same-volume move is a safe
+    // rename, but a cross-volume move is copy-then-unlink — if the OLD instance is still
+    // writing (mid-recording finalize, or a background coach/recoachAll call) during that
+    // window, the tail of the write can be lost or corrupted. Only allow starting a
+    // relocation when nothing can be writing to the DB.
+    private var canRelocate: Bool {
+        if case .idle = env.coordinator.phase, !env.isRecoaching { return true }
+        return false
+    }
+
     var body: some View {
         Form {
             Section("Coaching model") {
@@ -163,10 +174,17 @@ struct SettingsView: View {
                         }
                     }
                 }
+                if let exportResult = env.exportResult {
+                    Text(exportResult).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Data locations") {
                 Text("Where Debrief stores its files. Changing a location moves the existing data and relaunches Debrief.")
                     .font(.caption).foregroundStyle(.secondary)
+                if !canRelocate {
+                    Text("Finish or stop any recording and re-coaching before changing these — the move happens on relaunch.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 locationRow("Recordings", desiredKey: "audioDirDesired", actualKey: "audioDirActual",
                             errorKey: "audioDirError", subdir: "recordings",
                             defaultPath: RecordingStore.recordingsRoot().path)
@@ -247,6 +265,7 @@ struct SettingsView: View {
                     d.set(picked, forKey: desiredKey)
                     relaunchPrompt = RelaunchPrompt(dir: title)
                 }
+                .disabled(!canRelocate)
             }
             Text(current).font(.caption).foregroundStyle(.secondary)
             if let desired, desired != current, err == nil {
