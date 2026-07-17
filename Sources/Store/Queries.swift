@@ -88,6 +88,15 @@ extension AppDatabase {
         }
     }
 
+    /// Re-labels a session's round type. Only the type changes here; callers re-coach
+    /// afterwards so the debrief's scored dimensions match the new round's rubric.
+    public func updateSessionRoundType(id: Int64, _ roundType: RoundType) throws {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE session SET roundType = ? WHERE id = ?",
+                           arguments: [roundType.rawValue, id])
+        }
+    }
+
     public func insertSession(_ s: InterviewSession) throws -> InterviewSession {
         try dbWriter.write { db in var s = s; try s.insert(db); return s }
     }

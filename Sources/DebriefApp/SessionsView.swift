@@ -163,6 +163,10 @@ struct SessionDetailView: View {
     @State private var regenerating = false
     @State private var criteria = ""
     @State private var regenerateError: String?
+    // Snapshot the selectable round types once per session view. availableRoundTypes() does a
+    // directory listing, and debriefPane re-renders on every criteria keystroke — recomputing
+    // it per render would list the prompts dir on every keypress.
+    @State private var roundTypes: [RoundType] = []
 
     var body: some View {
         Group {
@@ -179,6 +183,7 @@ struct SessionDetailView: View {
             detail = try? env.db.sessionDetail(id: sessionId)
             companyName = detail?.company.name ?? ""
             criteria = detail?.session.customInstructions ?? ""
+            roundTypes = env.prompts.availableRoundTypes()
         }
         .onDisappear { if let detail { commitRename(detail) } }  // criteria persists live via .onChange
     }
@@ -193,6 +198,47 @@ struct SessionDetailView: View {
         case (true, true): return "Regenerating…"
         case (false, false): return "Generate debrief"
         case (false, true): return "Regenerate"
+        }
+    }
+
+    /// Re-runs coaching for this session on its current rubric, then reloads the pane.
+    /// Shared by the Regenerate button and the round-type change (which re-coaches so the
+    /// debrief's dimensions match the new round).
+    private func regenerate() {
+        regenerating = true
+        regenerateError = nil
+        Task {
+            do {
+                try await env.coaching.coach(sessionId: sessionId)
+            } catch {
+                regenerateError = "Couldn’t generate debrief: \(error.localizedDescription)"
+            }
+            // Guard the reload: a failed read must not blank out the pane.
+            if let fresh = try? env.db.sessionDetail(id: sessionId) { detail = fresh }
+            regenerating = false
+            onRenamed?()  // refresh the sidebar row's score/advancement/type badge post-coach
+        }
+    }
+
+    /// The round types offerable for `current`, always including `current` itself so a
+    /// session recorded under a custom type whose overlay was later deleted still shows.
+    private func roundTypeOptions(including current: RoundType) -> [RoundType] {
+        roundTypes.contains(current) ? roundTypes : [current] + roundTypes
+    }
+
+    /// Persists a new round type, then auto re-coaches on the new rubric. The type change
+    /// stands even if coaching fails — the session is simply retryable via Regenerate.
+    private func commitRoundType(_ d: SessionDetail, _ newType: RoundType) {
+        guard newType != d.session.roundType else { return }
+        do {
+            try env.db.updateSessionRoundType(id: sessionId, newType)
+            var s = d.session; s.roundType = newType
+            detail = SessionDetail(session: s, company: d.company,
+                                   segments: d.segments, feedback: d.feedback, tags: d.tags)
+            onRenamed?()      // the sidebar row shows the round type too
+            regenerate()      // re-coach on the new rubric
+        } catch {
+            regenerateError = "Couldn’t change interview type: \(error.localizedDescription)"
         }
     }
 
@@ -223,7 +269,17 @@ struct SessionDetailView: View {
                     TextField("Title", text: $companyName)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { commitRename(d) }
-                    Text("— \(d.session.roundType.displayName)").foregroundStyle(.secondary)
+                    Text("—").foregroundStyle(.secondary)
+                    Picker("Interview type", selection: Binding(
+                        get: { d.session.roundType },
+                        set: { commitRoundType(d, $0) })) {
+                        ForEach(roundTypeOptions(including: d.session.roundType), id: \.self) {
+                            Text($0.displayName).tag($0)
+                        }
+                    }
+                    .labelsHidden()
+                    .font(.body)              // don't inherit the title2/bold below
+                    .disabled(regenerating)   // don't switch rubric mid-coach
                 }
                 .font(.title2).bold()
                 if let renameError {
@@ -239,8 +295,11 @@ struct SessionDetailView: View {
                         if let regenerateError {
                             Text(regenerateError).font(.caption).foregroundStyle(.red)
                         }
-                        if d.session.coachingStatus == .failed && d.feedback == nil {
-                            Label("Last debrief failed — press Generate to retry.", systemImage: "exclamationmark.triangle")
+                        if d.session.coachingStatus == .failed {
+                            // Shown even when stale feedback is still present: after a failed
+                            // re-coach (e.g. following a round-type change) that feedback was
+                            // scored on a different rubric and must not read as current.
+                            Label("Last debrief failed — use the button below to retry.", systemImage: "exclamationmark.triangle")
                                 .font(.caption).foregroundStyle(.orange)
                         }
                         HStack {
@@ -248,18 +307,7 @@ struct SessionDetailView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                             Spacer()
                             Button(regenerateButtonTitle(hasFeedback: d.feedback != nil)) {
-                                regenerating = true
-                                regenerateError = nil
-                                Task {
-                                    do {
-                                        try await env.coaching.coach(sessionId: sessionId)
-                                    } catch {
-                                        regenerateError = "Couldn’t generate debrief: \(error.localizedDescription)"
-                                    }
-                                    // Guard the reload: a failed read must not blank out the pane.
-                                    if let fresh = try? env.db.sessionDetail(id: sessionId) { detail = fresh }
-                                    regenerating = false
-                                }
+                                regenerate()
                             }.disabled(regenerating)
                         }
                     }
