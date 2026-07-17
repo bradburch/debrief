@@ -40,6 +40,22 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(renamed.id, acme.id)  // attaches to existing company, no duplicate
     }
 
+    func testUpdateSessionRoundTypeChangesOnlyThatSession() throws {
+        let co = try db.fetchOrCreateCompany(named: "Acme")
+        func makeSession() throws -> Int64 {
+            try db.insertSession(InterviewSession(
+                id: nil, companyId: co.id!, roundType: .behavioral,
+                date: Date(timeIntervalSince1970: 1_750_000_000),
+                durationSeconds: 60, contextNotes: "", coachingStatus: .pending)).id!
+        }
+        let a = try makeSession()
+        let b = try makeSession()
+
+        try db.updateSessionRoundType(id: a, .systemDesign)
+        XCTAssertEqual(try db.sessionDetail(id: a)?.session.roundType, .systemDesign)
+        XCTAssertEqual(try db.sessionDetail(id: b)?.session.roundType, .behavioral)  // sibling untouched
+    }
+
     func testSessionRoundTripAndDetail() throws {
         let co = try db.fetchOrCreateCompany(named: "Acme")
         let s = try db.insertSession(InterviewSession(
