@@ -25,6 +25,14 @@ struct RequireMarkerLLM: CoachingLLM {
     }
 }
 
+/// Throws the error a torn-down URLSession call throws when the user hits Stop.
+struct CancellingLLM: CoachingLLM {
+    func generateCoaching(systemPrompt: String, userMessage: String,
+                          dimensions: [String]) async throws -> CoachingResult {
+        throw URLError(.cancelled)
+    }
+}
+
 /// Captures the dimensions the service resolved for a round, so a test can assert the
 /// overlay's declared dimensions actually reach the client.
 final class CapturingLLM: CoachingLLM, @unchecked Sendable {
@@ -88,6 +96,41 @@ final class CoachingServiceTests: XCTestCase {
         // be recomputed from overallScore (3.25 would round to a "yes"; the model said no).
         XCTAssertEqual(detail.feedback?.advancementValue, .leanNo)
         XCTAssertEqual(detail.feedback?.advancementRationale, "Stories had no result.")
+    }
+
+    func testCancellingARerunLeavesTheSessionCompleteNotFailed() async throws {
+        let id = try seedSession()
+        // Give the session a good debrief first, the way a real re-run would find it.
+        try await CoachingService(db: db, prompts: prompts, llm: StubLLM(result: .success(goodResult())))
+            .coach(sessionId: id)
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .complete)
+
+        // Hitting Stop tears down the in-flight request. That is not a failed debrief: the
+        // session still holds its previous feedback, and flipping it to `failed` would show a
+        // spurious error badge and drag it into "Retry pending debriefs".
+        let stopped = CoachingService(db: db, prompts: prompts, llm: CancellingLLM())
+        do { try await stopped.coach(sessionId: id); XCTFail("expected throw") }
+        catch { XCTAssertTrue(CoachingService.isCancellation(error)) }
+
+        let after = try XCTUnwrap(db.sessionDetail(id: id))
+        XCTAssertEqual(after.session.coachingStatus, .complete, "Stop marked a good session failed")
+        XCTAssertEqual(after.feedback?.proseDebrief, "Decent.", "previous debrief was lost")
+    }
+
+    func testCancelledRerunIsNotReportedAsAFailure() async throws {
+        _ = try seedSession()
+        // recoachAll surfaces per-session errors to the UI; a cancellation must not appear
+        // there, or Stop would always read as "1 failed".
+        let errors = await CoachingService(db: db, prompts: prompts, llm: CancellingLLM()).recoachAll()
+        XCTAssertTrue(errors.isEmpty, "cancellation reported as a session failure: \(errors)")
+    }
+
+    func testRealFailuresAreStillMarkedFailed() async throws {
+        // The guard must be narrow: a refusal is a genuine failure and must stay retryable.
+        let id = try seedSession()
+        let service = CoachingService(db: db, prompts: prompts, llm: StubLLM(result: .failure(.refusal)))
+        do { try await service.coach(sessionId: id); XCTFail("expected throw") } catch {}
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .failed)
     }
 
     func testProcessNotesPersistAndDefaultEmpty() async throws {

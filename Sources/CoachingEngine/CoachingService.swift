@@ -48,7 +48,13 @@ public struct CoachingService: Sendable {
                 processNotesJSON: String(data: try encoder.encode(result.processNotes), encoding: .utf8)!)
             try db.saveFeedback(feedback, tags: result.weaknessTags)
         } catch {
-            try? db.markCoachingFailed(sessionId: sessionId)
+            // A cancelled debrief is not a failed one. Stopping a re-run cancels the in-flight
+            // URLSession call, and marking that session `failed` would flip a session that
+            // still holds perfectly good feedback into an error state the user has to clean
+            // up — the exact opposite of what Stop should do.
+            if !Self.isCancellation(error) {
+                try? db.markCoachingFailed(sessionId: sessionId)
+            }
             throw error
         }
     }
@@ -86,11 +92,25 @@ public struct CoachingService: Sendable {
         for (i, session) in sessions.enumerated() {
             if Task.isCancelled { break }
             if let id = session.id {
-                do { try await coach(sessionId: id) } catch { errors[id] = error }
+                do { try await coach(sessionId: id) }
+                catch {
+                    // Cancellation lands here too (the in-flight request throws). It is not a
+                    // per-session failure and must not be reported as one, or Stop would
+                    // always look like "1 failed".
+                    if Self.isCancellation(error) { break }
+                    errors[id] = error
+                }
             }
             // Outside the `if let` so a malformed row can't stall the caller's progress bar.
             await onProgress(i + 1, sessions.count)
         }
         return errors
+    }
+
+    /// Swift concurrency cancellation surfaces two ways here: `CancellationError` from the
+    /// task machinery, and `URLError.cancelled` when it's the URLSession call that got torn
+    /// down — which is the common one, since that's where a re-run spends its time.
+    static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 }

@@ -4,22 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Debrief is a macOS menu-bar app that records interview calls locally, transcribes them on-device (WhisperKit), and generates coaching feedback via an LLM. `README.md` covers the product, privacy model, and first-run setup — read it for the "why." This file covers building and the non-obvious architecture.
 
-## Delegate to subagents, at the right strength
+## Always delegate to subagents, at the right model strength
 
-**Default to dispatching work to subagents rather than doing it inline**, and match each one's model and reasoning effort to the job. Send independent tasks in a single message so they run concurrently. Getting this wrong is expensive in both directions: a weak agent on a judgment call ships a confident wrong answer, and a strong agent on a mechanical sweep just burns tokens.
+**Dispatch work to subagents by default — every action, not just big ones.** Do it inline only when delegating genuinely costs more than it saves (a one-line edit to a file already open, answering from what's already on screen). When in doubt, delegate.
 
-| Work | Agent | Strength |
+**Always set the strength explicitly.** Pass `model` and `effort` on every `Agent`/`Workflow` call rather than letting them inherit by accident — an unset tier is a silent default, not a decision. Getting it wrong is expensive both ways: a weak agent on a judgment call ships a confident wrong answer, and a strong agent on a mechanical sweep burns tokens for nothing.
+
+**Send independent tasks in one message** so they run concurrently, and prefer `pipeline()` over barriers in workflows.
+
+| Work | Agent | Model / effort |
 |---|---|---|
-| Locating code, tracing callers, "where is X used" | `Explore` | low–medium effort |
-| Mechanical sweeps: renames, updating call sites, extracting fixtures | `general-purpose` | low–medium |
-| Prompt/rubric wording, schema and migration design, concurrency in `RecordingCoordinator` | `general-purpose` or inline | **high–xhigh** |
-| Adversarial checks: "is this claim actually supported", reviewing a risky diff | separate agent from the author | **high** |
-| Research with a cited, fact-checked answer | `deep-research` skill | verify/synthesis stages **high**; search/fetch **medium** |
+| Locating code, tracing callers, "where is X used" | `Explore` | haiku–sonnet, **low** |
+| Mechanical sweeps: renames, call-site updates, fixture extraction | `general-purpose` | sonnet, **low–medium** |
+| Reading a subsystem to answer a design question | `general-purpose` | sonnet–opus, **medium** |
+| Prompt/rubric wording, schema + migration design, `RecordingCoordinator` concurrency | `general-purpose` | opus, **high–xhigh** |
+| Adversarial checks: "is this claim supported?", reviewing a risky diff | an agent **other than the author** | opus, **high** |
+| Cited, fact-checked research | `deep-research` skill | verify/synthesis **high**; search/fetch **medium** |
 
 Calibration notes specific to this repo:
-- **Verification is not a mechanical task.** The judgment of *what would falsify this* deserves high effort. See "Verify against reality" below — a mocked test passing means very little here.
-- **Prompt and rubric changes are the highest-judgment work in the codebase** and the least checkable by tests. Do not delegate them cheaply; the failure mode is fluent, plausible, and wrong.
-- **Don't split what shares a contract.** The scored dimensions live in `DefaultPrompts` + `PromptStore.dimensions(for:)` + both LLM clients + the DB schema. Parallel agents each editing one end produce a diff that compiles and doesn't work.
+- **Verification is not mechanical.** Judging *what would falsify this* deserves high effort — see "Verify against reality" below. A passing mocked test means very little here.
+- **Prompt and rubric changes are the highest-judgment work in the codebase** and the least checkable by tests. Never delegate them cheaply; the failure mode is fluent, plausible, and wrong.
+- **Never let the author verify their own work.** Spawn a separate agent to check a rubric change or a risky diff. Both real bugs this rubric work shipped (an API-rejected schema, a stored all-zero debrief) were invisible to the code that produced them.
+- **Don't split what shares a contract.** The scored dimensions live in `DefaultPrompts` + `PromptStore.dimensions(for:)` + both LLM clients + the DB schema. Parallel agents each editing one end produce a diff that compiles and doesn't work — give one agent the whole contract.
 
 ## Toolchain gotcha (read first)
 
