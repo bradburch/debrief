@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage("openAICompatBaseURL") private var compatBaseURL = "http://localhost:11434/v1"
     @AppStorage("openAICompatModel") private var compatModel = ""
     @State private var compatKey = KeychainStore.read(key: "openai-compat-api-key") ?? ""
+    @AppStorage("exportDirectory") private var exportDir = ""
 
     private let modelOptions: [(label: String, id: String)] = [
         ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),
@@ -133,6 +134,30 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Open prompts folder") {
                     NSWorkspace.shared.open(PromptStore.defaultDirectory())
+                }
+            }
+            Section("Cowork export") {
+                Text(exportDir.isEmpty
+                     ? "Off — choose a folder to write each debrief as a markdown file Claude Cowork can read."
+                     : "Exporting to: \(exportDir)")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Choose export folder…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = true
+                        panel.canChooseFiles = false
+                        panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            exportDir = url.path
+                            env.exportAllSessions(to: url)  // backfill existing sessions immediately
+                        }
+                    }
+                    if !exportDir.isEmpty {
+                        Button("Turn off") { exportDir = "" }
+                        Button("Export all now") {
+                            env.exportAllSessions(to: URL(fileURLWithPath: exportDir))
+                        }
+                    }
                 }
             }
             Section("Permissions") {

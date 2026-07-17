@@ -82,6 +82,13 @@ final class AppEnvironment: ObservableObject {
 
     func cancelRecoach() { recoachTask?.cancel() }
 
+    /// Exports every session with a transcript to `dir`, off the main thread (many small
+    /// file writes). Fire-and-forget: the folder picker is the user-facing confirmation.
+    func exportAllSessions(to dir: URL) {
+        let coaching = self.coaching
+        Task.detached { _ = coaching.exportAll(to: dir) }
+    }
+
     static func outcome(total: Int, failed: Int, cancelled: Bool, completed: Int) -> RecoachOutcome {
         if total == 0 {
             return .init(text: "No sessions with transcripts to re-coach.", symbol: "info.circle", isProblem: false)
