@@ -216,6 +216,7 @@ struct SessionDetailView: View {
             // Guard the reload: a failed read must not blank out the pane.
             if let fresh = try? env.db.sessionDetail(id: sessionId) { detail = fresh }
             regenerating = false
+            onRenamed?()  // refresh the sidebar row's score/advancement/type badge post-coach
         }
     }
 
