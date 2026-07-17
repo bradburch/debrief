@@ -44,9 +44,12 @@ final class CountingTranscriber: Transcribing, @unchecked Sendable {
 }
 
 struct OKStubLLM: CoachingLLM {
-    func generateCoaching(systemPrompt: String, userMessage: String) async throws -> CoachingResult {
+    func generateCoaching(systemPrompt: String, userMessage: String,
+                          dimensions: [String]) async throws -> CoachingResult {
+        // Score whatever dimensions the round asked for, as a real client must.
         CoachingResult(proseDebrief: "ok",
-                       scores: ["answer_relevance": 3, "structure": 3, "conciseness": 3, "questions_asked": 3],
+                       scores: Dictionary(uniqueKeysWithValues: dimensions.map { ($0, 3) }),
+                       advancement: .leanYes, advancementRationale: "ok",
                        weaknessTags: [], highlights: [], actionItems: [])
     }
 }

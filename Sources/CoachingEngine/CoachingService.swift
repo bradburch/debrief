@@ -20,6 +20,7 @@ public struct CoachingService: Sendable {
             let system = try prompts.assembleSystemPrompt(roundType: detail.session.roundType,
                                                           historyTags: history,
                                                           customInstructions: detail.session.customInstructions)
+            let dimensions = try prompts.dimensions(for: detail.session.roundType)
             let transcript = try db.transcriptText(sessionId: sessionId)
             let user = """
             Interview metadata:
@@ -31,7 +32,8 @@ public struct CoachingService: Sendable {
             Transcript:
             \(transcript)
             """
-            let result = try await llm.generateCoaching(systemPrompt: system, userMessage: user)
+            let result = try await llm.generateCoaching(systemPrompt: system, userMessage: user,
+                                                        dimensions: dimensions)
 
             let encoder = JSONEncoder()
             let feedback = FeedbackRecord(
@@ -40,7 +42,10 @@ public struct CoachingService: Sendable {
                 scoresJSON: String(data: try encoder.encode(result.scores), encoding: .utf8)!,
                 highlightsJSON: String(data: try encoder.encode(result.highlights), encoding: .utf8)!,
                 actionItemsJSON: String(data: try encoder.encode(result.actionItems), encoding: .utf8)!,
-                overallScore: result.overallScore)
+                overallScore: result.overallScore,
+                advancement: result.advancement.rawValue,
+                advancementRationale: result.advancementRationale,
+                processNotesJSON: String(data: try encoder.encode(result.processNotes), encoding: .utf8)!)
             try db.saveFeedback(feedback, tags: result.weaknessTags)
         } catch {
             try? db.markCoachingFailed(sessionId: sessionId)
@@ -54,11 +59,37 @@ public struct CoachingService: Sendable {
     /// no sessions are attempted and this also returns empty as a conservative
     /// no-op, not as a signal that everything succeeded.
     public func retryAllPending() async -> [Int64: Error] {
+        await coachEach((try? db.sessionsNeedingCoaching()) ?? [])
+    }
+
+    /// Re-runs coaching for EVERY session with a transcript, including already-complete
+    /// ones. This is how a rubric change (new scored dimensions, the advancement verdict)
+    /// reaches existing debriefs — without it, old and new sessions carry incomparable
+    /// scores in the same column. Idempotent: saveFeedback replaces the row and its tags.
+    ///
+    /// Costs one LLM call per session and overwrites debrief prose the user may have read.
+    /// Callers should confirm first.
+    ///
+    /// `onProgress(completed, total)` fires once before the first call (with 0) so a caller
+    /// can show a determinate total immediately, then after each session settles. One LLM
+    /// call runs ~30s, so a multi-minute run without this reads as a hang.
+    /// Honors cancellation between sessions: sessions already re-coached keep their new
+    /// feedback, and the rest stay on the old rubric until re-run.
+    public func recoachAll(onProgress: @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async -> [Int64: Error] {
+        await coachEach((try? db.sessionsWithTranscript()) ?? [], onProgress: onProgress)
+    }
+
+    private func coachEach(_ sessions: [InterviewSession],
+                           onProgress: @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async -> [Int64: Error] {
         var errors: [Int64: Error] = [:]
-        let sessions = (try? db.sessionsNeedingCoaching()) ?? []
-        for session in sessions {
-            guard let id = session.id else { continue }
-            do { try await coach(sessionId: id) } catch { errors[id] = error }
+        await onProgress(0, sessions.count)
+        for (i, session) in sessions.enumerated() {
+            if Task.isCancelled { break }
+            if let id = session.id {
+                do { try await coach(sessionId: id) } catch { errors[id] = error }
+            }
+            // Outside the `if let` so a malformed row can't stall the caller's progress bar.
+            await onProgress(i + 1, sessions.count)
         }
         return errors
     }

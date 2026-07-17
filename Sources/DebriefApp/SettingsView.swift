@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var saveError: String?
     @AppStorage("keepAudioAfterTranscription") private var keepAudio = false
     @State private var retryResult: String?
+    @State private var confirmingRecoach = false
     @AppStorage("coachingModel") private var model = AnthropicClient.defaultModel
     @AppStorage("coachingProvider") private var provider = "anthropic"
     @AppStorage("openAICompatBaseURL") private var compatBaseURL = "http://localhost:11434/v1"
@@ -105,6 +106,31 @@ struct SettingsView: View {
                     }
                 }
                 if let retryResult { Text(retryResult).font(.caption) }
+                HStack {
+                    Button("Re-run debriefs on current rubric") { confirmingRecoach = true }
+                        .disabled(env.isRecoaching)
+                    if env.isRecoaching { Button("Stop") { env.cancelRecoach() } }
+                }
+                if let progress = env.recoachProgress {
+                    // Determinate: the total is known before the first call, and each session
+                    // takes ~30s — an indeterminate spinner would read as a hang for minutes.
+                    ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1))) {
+                        Text(progress.total == 0
+                             ? "Starting…"
+                             : progress.done == 0
+                               ? "Starting \(progress.total) debrief\(progress.total == 1 ? "" : "s")…"
+                               : "Re-coaching \(min(progress.done + 1, progress.total)) of \(progress.total)…")
+                            .font(.caption)
+                    }
+                    .progressViewStyle(.linear)
+                }
+                if let outcome = env.recoachOutcome {
+                    Label(outcome.text, systemImage: outcome.symbol)
+                        .font(.caption)
+                        .foregroundStyle(outcome.isProblem ? Color.orange : Color.green)
+                }
+                Text("Re-coaches every past session so old debriefs use the current prompts and get an advancement verdict. Costs one API call per session (~30s each) and replaces existing debrief text.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Button("Open prompts folder") {
                     NSWorkspace.shared.open(PromptStore.defaultDirectory())
                 }
@@ -122,5 +148,11 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .confirmationDialog("Re-run every past debrief?", isPresented: $confirmingRecoach) {
+            Button("Re-run all", role: .destructive) { env.startRecoach() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Existing debrief text, scores, and tags are replaced with fresh ones from the current prompts. Transcripts are untouched. This makes old sessions comparable to new ones, and costs one API call per session (~30s each).")
+        }
     }
 }

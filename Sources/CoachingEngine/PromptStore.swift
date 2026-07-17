@@ -42,6 +42,44 @@ public struct PromptStore: Sendable {
         return RoundType.builtins.filter(types.contains) + customs
     }
 
+    /// Parses `- key: description` bullets out of a `## Scored dimensions` section.
+    /// Returns [] when the section is absent, so a hand-written overlay with no such
+    /// section still coaches — it just contributes no scored dimensions of its own.
+    static func parseDimensions(_ markdown: String) -> [String] {
+        var keys: [String] = []
+        var inSection = false
+        for line in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("## ") {
+                // Any other heading closes the section — dimensions never span headings.
+                inSection = trimmed.lowercased() == "## scored dimensions"
+                continue
+            }
+            guard inSection, trimmed.hasPrefix("- ") else { continue }
+            // Continuation lines of a wrapped bullet are indented, so only an
+            // unindented "- " starts a new dimension.
+            guard line.hasPrefix("- "), let colon = trimmed.firstIndex(of: ":") else { continue }
+            let key = String(trimmed[trimmed.index(trimmed.startIndex, offsetBy: 2)..<colon])
+                .trimmingCharacters(in: .whitespaces)
+            // snake_case only: guards against prose bullets ("- Note: ...") becoming keys.
+            if !key.isEmpty, key.allSatisfy({ $0.isLowercase || $0.isNumber || $0 == "_" }) {
+                keys.append(key)
+            }
+        }
+        return keys
+    }
+
+    /// The scored dimension keys for a round: base's shared delivery dimensions plus the
+    /// overlay's round-specific ones. This is the JSON-schema contract the LLM must return,
+    /// so it is derived from the same markdown the model reads — the two cannot drift.
+    public func dimensions(for roundType: RoundType) throws -> [String] {
+        let base = try String(contentsOf: directory.appendingPathComponent("base.md"), encoding: .utf8)
+        let overlay = (try? String(contentsOf: directory.appendingPathComponent("\(roundType.rawValue).md"),
+                                   encoding: .utf8)) ?? ""
+        var seen = Set<String>()
+        return (Self.parseDimensions(base) + Self.parseDimensions(overlay)).filter { seen.insert($0).inserted }
+    }
+
     public func assembleSystemPrompt(roundType: RoundType,
                                      historyTags: [(tag: String, count: Int)],
                                      customInstructions: String = "") throws -> String {

@@ -24,6 +24,78 @@ final class AppEnvironment: ObservableObject {
     @Published var recordRoundType: RoundType = .behavioral
     @Published var recordNotes = ""
 
+    // Which tab MainWindow shows. Lives here so a view can navigate to another tab —
+    // PipelineView jumping to a session — without plumbing a Binding through the hierarchy.
+    @Published var selectedTab: MainTab? = .sessions
+    /// A session to select once SessionsView appears. Set by `revealSession`; SessionsView
+    /// consumes and clears it. Needed because the tab switch rebuilds SessionsView from
+    /// scratch, so the selection can't simply be handed to a live instance.
+    @Published var sessionToReveal: Int64?
+
+    /// Jump to a session from anywhere (currently the Pipeline's round cells).
+    func revealSession(_ id: Int64) {
+        sessionToReveal = id
+        selectedTab = .sessions
+    }
+
+    // Re-coach state lives here, not in SettingsView, because MainWindow switches tabs with a
+    // `switch` that DESTROYS the settings view. As view @State this progress vanished on any
+    // tab switch while the run kept going — and coming back re-enabled the button, letting a
+    // second concurrent run start over the same sessions. Here it survives navigation and
+    // `recoachTask != nil` is a global "already running" interlock.
+    @Published private(set) var recoachProgress: (done: Int, total: Int)?
+    @Published private(set) var recoachOutcome: RecoachOutcome?
+    private var recoachTask: Task<Void, Never>?
+
+    var isRecoaching: Bool { recoachTask != nil }
+
+    /// Terminal state of a re-run, so "finished clean", "finished with failures", and "you
+    /// stopped it" don't collapse into one line of grey text.
+    struct RecoachOutcome: Equatable {
+        let text: String
+        let symbol: String
+        let isProblem: Bool
+    }
+
+    /// Re-coaches every past session on the current rubric, publishing progress as it goes.
+    /// No-op if a run is already in flight.
+    func startRecoach() {
+        guard recoachTask == nil else { return }
+        recoachOutcome = nil
+        recoachProgress = (0, 0)
+        recoachTask = Task { [weak self] in
+            guard let self else { return }
+            let errors = await self.coaching.recoachAll { done, total in
+                self.recoachProgress = (done, total)
+            }
+            let total = self.recoachProgress?.total ?? 0
+            let done = self.recoachProgress?.done ?? 0
+            let cancelled = Task.isCancelled || done < total
+            self.recoachOutcome = Self.outcome(total: total, failed: errors.count,
+                                               cancelled: cancelled, completed: done)
+            self.recoachProgress = nil
+            self.recoachTask = nil
+        }
+    }
+
+    func cancelRecoach() { recoachTask?.cancel() }
+
+    static func outcome(total: Int, failed: Int, cancelled: Bool, completed: Int) -> RecoachOutcome {
+        if total == 0 {
+            return .init(text: "No sessions with transcripts to re-coach.", symbol: "info.circle", isProblem: false)
+        }
+        if cancelled {
+            return .init(text: "Stopped after \(completed) of \(total). The rest keep their old debriefs.",
+                         symbol: "stop.circle", isProblem: true)
+        }
+        if failed > 0 {
+            return .init(text: "\(total - failed) re-coached, \(failed) failed — see the sessions list.",
+                         symbol: "exclamationmark.triangle.fill", isProblem: true)
+        }
+        return .init(text: "Done — \(total) session\(total == 1 ? "" : "s") re-coached on the current rubric.",
+                     symbol: "checkmark.circle.fill", isProblem: false)
+    }
+
     func clearRecordMetadata() { recordCompany = ""; recordNotes = "" }
 
     /// Single stop path shared by the two Stop buttons and call-end auto-stop.

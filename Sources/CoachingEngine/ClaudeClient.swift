@@ -1,7 +1,12 @@
 import Foundation
+import Store
 
 public protocol CoachingLLM: Sendable {
-    func generateCoaching(systemPrompt: String, userMessage: String) async throws -> CoachingResult
+    /// `dimensions` are the scored keys for this round, parsed from the prompt markdown by
+    /// `PromptStore.dimensions(for:)`. They vary by round type, so the response contract is
+    /// per-call rather than a constant — implementations must require exactly these keys.
+    func generateCoaching(systemPrompt: String, userMessage: String,
+                          dimensions: [String]) async throws -> CoachingResult
 }
 
 public enum ClaudeError: Error, Equatable {
@@ -38,39 +43,62 @@ public struct AnthropicClient: CoachingLLM {
     }
 
     /// JSON schema for structured outputs: guarantees the response text is a single
-    /// valid JSON object decodable as CoachingResult. Scores use four fixed dimensions.
-    static let outputSchema: [String: Any] = [
-        "type": "object",
-        "properties": [
-            "prose_debrief": ["type": "string"],
-            "scores": [
-                "type": "object",
-                "properties": [
-                    "answer_relevance": ["type": "integer"],
-                    "structure": ["type": "integer"],
-                    "conciseness": ["type": "integer"],
-                    "questions_asked": ["type": "integer"],
-                ],
-                "required": ["answer_relevance", "structure", "conciseness", "questions_asked"],
-                "additionalProperties": false,
-            ],
-            "weakness_tags": ["type": "array", "items": ["type": "string"]],
-            "highlights": [
-                "type": "array",
-                "items": [
+    /// valid JSON object decodable as CoachingResult. Built per call because the scored
+    /// dimensions differ by round type — `additionalProperties: false` plus an exhaustive
+    /// `required` is what forces the model to score this round's dimensions and no others.
+    static func outputSchema(dimensions: [String]) -> [String: Any] {
+        var scoreProps: [String: Any] = [:]
+        for key in dimensions {
+            // No minimum/maximum: the API rejects range keywords on integer types with a 400
+            // ("For 'integer' type, properties maximum, minimum are not supported"). The 1-5
+            // range is carried by the band definitions in base.md instead.
+            scoreProps[key] = ["type": "integer"]
+        }
+        return [
+            "type": "object",
+            "properties": [
+                "prose_debrief": ["type": "string"],
+                "scores": [
                     "type": "object",
-                    "properties": ["t": ["type": "string"], "note": ["type": "string"]],
-                    "required": ["t", "note"],
+                    "properties": scoreProps,
+                    "required": dimensions,
                     "additionalProperties": false,
                 ],
+                // Enum-constrained so the verdict can never arrive as free prose, and
+                // ordered worst→best so the model reads it as an ordinal scale.
+                "advancement": ["type": "string", "enum": Advancement.allCases.map(\.rawValue)],
+                "advancement_rationale": ["type": "string"],
+                "weakness_tags": ["type": "array", "items": ["type": "string"]],
+                "highlights": [
+                    "type": "array",
+                    "items": [
+                        "type": "object",
+                        "properties": ["t": ["type": "string"], "note": ["type": "string"]],
+                        "required": ["t", "note"],
+                        "additionalProperties": false,
+                    ],
+                ],
+                "action_items": ["type": "array", "items": ["type": "string"]],
+                "process_notes": [
+                    "type": "array",
+                    "items": [
+                        "type": "object",
+                        "properties": ["t": ["type": "string"], "note": ["type": "string"]],
+                        "required": ["t", "note"],
+                        "additionalProperties": false,
+                    ],
+                ],
             ],
-            "action_items": ["type": "array", "items": ["type": "string"]],
-        ],
-        "required": ["prose_debrief", "scores", "weakness_tags", "highlights", "action_items"],
-        "additionalProperties": false,
-    ]
+            // process_notes is required-but-may-be-empty: making it optional invites the model
+            // to omit it silently, which is indistinguishable from "the topic never came up".
+            "required": ["prose_debrief", "scores", "advancement", "advancement_rationale",
+                         "weakness_tags", "highlights", "action_items", "process_notes"],
+            "additionalProperties": false,
+        ]
+    }
 
-    public func generateCoaching(systemPrompt: String, userMessage: String) async throws -> CoachingResult {
+    public func generateCoaching(systemPrompt: String, userMessage: String,
+                                 dimensions: [String]) async throws -> CoachingResult {
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
         request.httpMethod = "POST"
         request.timeoutInterval = 300
@@ -84,7 +112,8 @@ public struct AnthropicClient: CoachingLLM {
             "thinking": thinkingParam,
             "system": systemPrompt,
             "messages": [["role": "user", "content": userMessage]],
-            "output_config": ["format": ["type": "json_schema", "schema": Self.outputSchema]],
+            "output_config": ["format": ["type": "json_schema",
+                                         "schema": Self.outputSchema(dimensions: dimensions)]],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

@@ -6,6 +6,18 @@ extension Color {
     static func forScore(_ score: Double) -> Color {
         score >= 3.5 ? .green : score >= 2.5 ? .orange : .red
     }
+
+    /// The verdict's scale. Distinct from forScore because this is an ordinal call, not a
+    /// threshold on a number — the two leans are deliberately different shades so a
+    /// borderline result never reads as a clean pass or a clean reject.
+    static func forAdvancement(_ a: Advancement) -> Color {
+        switch a {
+        case .strongYes: return .green
+        case .leanYes: return .mint
+        case .leanNo: return .orange
+        case .strongNo: return .red
+        }
+    }
 }
 
 enum MainTab: String, CaseIterable {
@@ -21,19 +33,22 @@ enum MainTab: String, CaseIterable {
 }
 
 struct MainWindow: View {
-    @State private var tab: MainTab? = .sessions
+    // Tab selection lives on AppEnvironment so other views can navigate here (Pipeline →
+    // a session). Was @State; nothing else could reach it.
+    @EnvironmentObject var env: AppEnvironment
 
     var body: some View {
         NavigationSplitView {
-            List(MainTab.allCases, id: \.self, selection: $tab) { t in
+            List(MainTab.allCases, id: \.self, selection: $env.selectedTab) { t in
                 Label(t.rawValue, systemImage: t.symbol).tag(t)
             }
             .navigationSplitViewColumnWidth(180)
         } detail: {
             VStack(spacing: 0) {
                 RecordingBar()
+                RecoachBar()
                 Divider()
-                switch tab ?? .sessions {
+                switch env.selectedTab ?? .sessions {
                 case .sessions: SessionsView()
                 case .pipeline: PipelineView()
                 case .trends: TrendsView()
@@ -42,6 +57,32 @@ struct MainWindow: View {
             }
         }
         .frame(minWidth: 900, minHeight: 560)
+    }
+}
+
+/// A re-run takes ~30s per session and outlives the Settings tab, so its progress is shown
+/// app-wide rather than only where it was started. Absent unless a run is in flight.
+struct RecoachBar: View {
+    @EnvironmentObject var env: AppEnvironment
+
+    var body: some View {
+        if let progress = env.recoachProgress {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(progress.total == 0
+                     ? "Re-coaching debriefs…"
+                     : "Re-coaching debrief \(min(progress.done + 1, progress.total)) of \(progress.total)…")
+                    .font(.caption)
+                if progress.total > 0 {
+                    ProgressView(value: Double(progress.done), total: Double(progress.total))
+                        .progressViewStyle(.linear).frame(maxWidth: 160)
+                }
+                Spacer()
+                Button("Stop") { env.cancelRecoach() }.controlSize(.small)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(.bar)
+        }
     }
 }
 

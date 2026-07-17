@@ -23,6 +23,59 @@ final class PromptStoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("base.md"), encoding: .utf8), "MY CUSTOM PROMPT")
     }
 
+    func testParseDimensionsReadsOnlyItsOwnSection() {
+        let md = """
+        # Overlay
+
+        Additional focus:
+        - Think-aloud quality: prose bullet, NOT a dimension — wrong section.
+
+        ## Scored dimensions
+
+        - correctness: did it work?
+          - nested: an indented continuation line, not a new dimension.
+        - problem_solving: how they got there.
+        - Note: a capitalized prose bullet is not a snake_case key.
+
+        ## Additional weakness tags
+
+        - not_a_dimension: this section is over.
+        """
+        XCTAssertEqual(PromptStore.parseDimensions(md), ["correctness", "problem_solving"])
+    }
+
+    func testParseDimensionsAbsentSectionYieldsNone() {
+        // A hand-written overlay with no dimensions section must still coach.
+        XCTAssertEqual(PromptStore.parseDimensions("# Overlay\n\nJust focus prose.\n"), [])
+    }
+
+    func testDimensionsMergeBaseAndOverlayWithoutDuplicates() throws {
+        try store.ensureDefaults()
+        let dims = try store.dimensions(for: .technical)
+        // Base's delivery dimensions come first, then the round's own.
+        XCTAssertEqual(Array(dims.prefix(4)),
+                       ["answer_relevance", "structure", "conciseness", "questions_asked"])
+        XCTAssertTrue(dims.contains("correctness"), "the technical round must score correctness")
+        XCTAssertEqual(dims.count, Set(dims).count, "duplicate keys would break the JSON schema")
+    }
+
+    func testEveryBuiltinRoundDeclaresRoundSpecificDimensions() throws {
+        try store.ensureDefaults()
+        let base = try store.dimensions(for: RoundType(rawValue: "base_only_nonexistent_overlay"))
+        for round in RoundType.builtins {
+            let dims = try store.dimensions(for: round)
+            XCTAssertFalse(Set(dims).subtracting(base).isEmpty,
+                           "\(round.rawValue) scores only delivery dimensions — its overlay declares none")
+        }
+    }
+
+    func testMissingOverlayFallsBackToBaseDimensions() throws {
+        try store.ensureDefaults()
+        // A custom round type whose .md the user deleted must not fail the debrief.
+        XCTAssertEqual(try store.dimensions(for: RoundType(rawValue: "gone")),
+                       ["answer_relevance", "structure", "conciseness", "questions_asked"])
+    }
+
     func testAssembleLayersBaseOverlayAndHistory() throws {
         try store.ensureDefaults()
         let prompt = try store.assembleSystemPrompt(
