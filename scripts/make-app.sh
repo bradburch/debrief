@@ -30,8 +30,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>Debrief records your side of interview calls to transcribe and coach you.</string>
 </dict></plist>
 PLIST
-# Sign with a STABLE identity so macOS TCC (mic/Screen Recording) and Keychain
-# grants survive rebuilds. Ad-hoc (`--sign -`) re-keys the app's designated
+# Sign with a STABLE identity so macOS TCC (mic/Screen Recording) grants survive
+# rebuilds. Ad-hoc (`--sign -`) re-keys the app's designated
 # requirement to a fresh cdhash every build, so the OS treats each rebuild as a
 # new, untrusted app and drops every prior grant. A self-signed code-signing
 # cert ties the requirement to the cert instead of the binary. Override the name
@@ -40,7 +40,7 @@ PLIST
 # Note: no `-v` (valid-only) here — a self-signed root is untrusted
 # (CSSMERR_TP_NOT_TRUSTED) so `-v` hides it, yet codesign signs with it fine and
 # the resulting designated requirement is cert-based (stable across rebuilds),
-# which is all TCC/Keychain need. Trust is not required.
+# which is all TCC needs. Trust is not required.
 IDENTITY="${DEBRIEF_SIGN_IDENTITY:-Debrief Local Signing}"
 if security find-identity -p codesigning | grep -qF "$IDENTITY"; then
     codesign --force --sign "$IDENTITY" "$APP"
@@ -48,7 +48,7 @@ if security find-identity -p codesigning | grep -qF "$IDENTITY"; then
 else
     codesign --force --sign - "$APP"
     echo "WARNING: no '$IDENTITY' code-signing identity found — fell back to ad-hoc."
-    echo "  TCC (mic/Screen Recording) and Keychain grants will NOT persist across rebuilds."
+    echo "  TCC (mic/Screen Recording) grants will NOT persist across rebuilds."
     echo "  Fix once: Keychain Access > Certificate Assistant > Create a Certificate"
     echo "    Name: $IDENTITY | Identity Type: Self Signed Root | Certificate Type: Code Signing"
 fi

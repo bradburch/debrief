@@ -4,7 +4,7 @@ import CaptureKit
 
 struct SettingsView: View {
     @EnvironmentObject var env: AppEnvironment
-    @State private var apiKey = KeychainStore.read(key: "anthropic-api-key") ?? ""
+    @State private var apiKey = SecretStore.read(key: "anthropic-api-key") ?? ""
     @State private var saved = false
     @State private var saveError: String?
     @AppStorage("keepAudioAfterTranscription") private var keepAudio = false
@@ -14,7 +14,7 @@ struct SettingsView: View {
     @AppStorage("coachingProvider") private var provider = "anthropic"
     @AppStorage("openAICompatBaseURL") private var compatBaseURL = "http://localhost:11434/v1"
     @AppStorage("openAICompatModel") private var compatModel = ""
-    @State private var compatKey = KeychainStore.read(key: "openai-compat-api-key") ?? ""
+    @State private var compatKey = SecretStore.read(key: "openai-compat-api-key") ?? ""
     @AppStorage("exportDirectory") private var exportDir = ""
     @State private var relaunchPrompt: RelaunchPrompt?
     @State private var relaunchError: String?
@@ -64,9 +64,9 @@ struct SettingsView: View {
                         Button("Save") {
                             do {
                                 if apiKey.isEmpty {
-                                    try KeychainStore.delete(key: "anthropic-api-key")
+                                    try SecretStore.delete(key: "anthropic-api-key")
                                 } else {
-                                    try KeychainStore.save(key: "anthropic-api-key", value: apiKey)
+                                    try SecretStore.save(key: "anthropic-api-key", value: apiKey)
                                 }
                                 env.rebuildCoaching()
                                 saved = true
@@ -94,9 +94,9 @@ struct SettingsView: View {
                     Button("Save key") {
                         do {
                             if compatKey.isEmpty {
-                                try KeychainStore.delete(key: "openai-compat-api-key")
+                                try SecretStore.delete(key: "openai-compat-api-key")
                             } else {
-                                try KeychainStore.save(key: "openai-compat-api-key", value: compatKey)
+                                try SecretStore.save(key: "openai-compat-api-key", value: compatKey)
                             }
                             env.rebuildCoaching()
                             saved = true; saveError = nil
