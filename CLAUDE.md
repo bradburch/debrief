@@ -57,7 +57,7 @@ DEBRIEF_RUN_INTEGRATION=1 … swift test --filter WhisperIntegrationTests
 ANTHROPIC_API_KEY=… DEBRIEF_RUN_INTEGRATION=1 … swift test --filter CoachingIntegrationTests
 ```
 
-**Why `make-app.sh` instead of `swift run`:** macOS attaches Microphone/Screen-Recording TCC prompts to the *bundle*, and `CallAlerts` touches `UNUserNotificationCenter`, which traps in an unbundled binary. Always run the app via the `.app`. The script signs with a stable self-signed identity (`Debrief Local Signing`) so TCC/Keychain grants survive rebuilds — the header comment in the script explains why ad-hoc signing loses grants every build.
+**Why `make-app.sh` instead of `swift run`:** macOS attaches Microphone/Screen-Recording TCC prompts to the *bundle*, and `CallAlerts` touches `UNUserNotificationCenter`, which traps in an unbundled binary. Always run the app via the `.app`. The script signs with a stable self-signed identity (`Debrief Local Signing`) so TCC (Microphone/Screen-Recording) grants survive rebuilds — the header comment in the script explains why ad-hoc signing loses grants every build.
 
 Hardware capture paths (mic/screen) can't be unit-tested; verify them against `docs/manual-test-checklist.md`.
 
@@ -111,7 +111,7 @@ Phase state machine: `.idle → .recording → .finalizing(status:) → .idle` (
 
 ### LLM abstraction
 
-`CoachingLLM` protocol has two implementations: `AnthropicClient` (Claude API) and `OpenAICompatibleClient` (Ollama / LM Studio / any OpenAI-compatible server — see `docs/local-llm.md`). `AppEnvironment.resolveLLM()` picks based on `UserDefaults`. The API key lives in the macOS Keychain (`KeychainStore`), falling back to `ANTHROPIC_API_KEY`. `coordinator.coaching` is reassignable so a key/model changed in Settings applies to the next debrief without relaunch (`rebuildCoaching()`).
+`CoachingLLM` protocol has two implementations: `AnthropicClient` (Claude API) and `OpenAICompatibleClient` (Ollama / LM Studio / any OpenAI-compatible server — see `docs/local-llm.md`). `AppEnvironment.resolveLLM()` picks based on `UserDefaults`. The API key lives in a 0600 `secrets.json` under Application Support (`SecretStore`), falling back to `ANTHROPIC_API_KEY`. It is deliberately *not* the Keychain: the self-signed, no-Team-ID signing pins each keychain item to the app's cdhash, which changes every rebuild and re-prompts for the keychain password on every launch/save — the header comment in `SecretStore` records the full dead-end (data-protection keychain and null-ACL both ruled out). Sign with a Team ID cert if you want keychain-grade at-rest encryption back. `coordinator.coaching` is reassignable so a key/model changed in Settings applies to the next debrief without relaunch (`rebuildCoaching()`).
 
 Coaching runs with `try?` inside `runFinalize` — a failed debrief leaves the session **retryable** (status `pending`/`failed`), never blocks finalization. Settings → "Retry pending debriefs" calls `retryAllPending()`; Settings → "Re-run debriefs on current rubric" calls `recoachAll()`, which re-coaches **already-complete** sessions too (the only way a prompt change reaches existing debriefs).
 

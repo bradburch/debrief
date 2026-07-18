@@ -6,7 +6,7 @@ import Transcriber
 import CoachingEngine
 import CaptureKit
 
-private let anthropicKeychainKey = "anthropic-api-key"
+private let anthropicKeyName = "anthropic-api-key"
 
 @MainActor
 final class AppEnvironment: ObservableObject {
@@ -177,11 +177,11 @@ final class AppEnvironment: ObservableObject {
         recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot)
     }
 
-    // nonisolated so the Keychain read can run off the main thread — a synchronous
-    // SecItemCopyMatching can block on the keychain-auth dialog and must never do so
-    // on the launch main thread (it would hang the whole app before detection starts).
+    // nonisolated so key resolution can run off the main thread; retained defensively —
+    // the key is now a cheap SecretStore file read, no longer a Keychain call that
+    // could block launch on an auth dialog (see SecretStore for why we left the Keychain).
     nonisolated static func resolveAPIKey() -> String {
-        KeychainStore.read(key: anthropicKeychainKey)
+        SecretStore.read(key: anthropicKeyName)
             ?? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? ""
     }
 
@@ -197,11 +197,11 @@ final class AppEnvironment: ObservableObject {
         let url = URL(string: d.string(forKey: "openAICompatBaseURL") ?? "") ?? URL(string: "http://localhost:11434/v1")!
         return OpenAICompatibleClient(baseURL: url,
                                       model: d.string(forKey: "openAICompatModel") ?? "",
-                                      apiKey: KeychainStore.read(key: "openai-compat-api-key") ?? "")
+                                      apiKey: SecretStore.read(key: "openai-compat-api-key") ?? "")
     }
 
-    /// Resolve off the main thread — resolveLLM() reads the API key from the Keychain, which
-    /// can block on the auth dialog; doing it on the main actor would hang the Settings UI.
+    /// Resolve off the main thread. Retained defensively — the key is now a cheap SecretStore
+    /// file read, no longer a Keychain call that could block the Settings UI on an auth dialog.
     func rebuildCoaching() {
         Task.detached { [self] in
             let llm = Self.resolveLLM()
@@ -210,7 +210,7 @@ final class AppEnvironment: ObservableObject {
     }
 
     /// Swaps in a resolved coaching LLM. Kept separate from resolution so the initial
-    /// (Keychain-reading) resolution can happen off the main thread — see live().
+    /// (key-reading) resolution can happen off the main thread — see live().
     func applyLLM(_ llm: CoachingLLM) {
         coaching = CoachingService(db: db, prompts: prompts, llm: llm)
         coordinator.coaching = coaching
@@ -223,9 +223,9 @@ final class AppEnvironment: ObservableObject {
             let db = try AppDatabase.onDisk(at: loc.db.appendingPathComponent("debrief.sqlite"))
             let prompts = PromptStore(directory: loc.prompts)
             try prompts.ensureDefaults()
-            // Start with a no-Keychain client; the real LLM is resolved off-main below so a
-            // keychain-auth prompt can't hang launch. Coaching only runs long after launch
-            // (post-finalize), by which point the real client has been swapped in.
+            // Start with an empty-key client; the real LLM is resolved off-main below.
+            // Coaching only runs long after launch (post-finalize), by which point the
+            // real client has been swapped in.
             let coaching = CoachingService(db: db, prompts: prompts,
                                            llm: AnthropicClient(apiKey: "", model: resolveModel()))
             let keepAudio = UserDefaults.standard.bool(forKey: "keepAudioAfterTranscription")
@@ -247,8 +247,8 @@ final class AppEnvironment: ObservableObject {
                 guard let env else { return }
                 Task { await env.startRecording() }
             }
-            // Resolve the real coaching LLM (reads the API key from the Keychain) off the
-            // main thread, then swap it in. Keeps a keychain-auth dialog from freezing launch.
+            // Resolve the real coaching LLM (reads the API key) off the main thread, then
+            // swap it in.
             Task.detached {
                 let llm = resolveLLM()
                 await MainActor.run { env.applyLLM(llm) }
