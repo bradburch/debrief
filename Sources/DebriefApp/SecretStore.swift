@@ -1,4 +1,5 @@
 import Foundation
+import CaptureKit
 
 /// API keys for a local, single-user dev app. Stored as a 0600 JSON file in
 /// Application Support instead of the macOS Keychain.
@@ -10,13 +11,15 @@ import Foundation
 /// provisioning-profile entitlement, and a null-application ACL is still gated
 /// by the cdhash partition). A 0600 file is prompt-free forever, and its
 /// security is on par here: readable only by processes running as you (already
-/// true for the ANTHROPIC_API_KEY env fallback) and encrypted at rest by
-/// FileVault. Give the app a Team ID cert if you want keychain-grade at-rest.
+/// true for the ANTHROPIC_API_KEY env fallback).
+///
+/// Tradeoff vs the Keychain: the key is plaintext at rest, so unlike a Keychain
+/// item it rides along in cleartext in unencrypted Time Machine backups unless
+/// the whole disk/backup is encrypted (FileVault). Give the app a Team ID cert
+/// if you want keychain-grade at-rest encryption back.
 enum SecretStore {
-    // Inlined rather than importing CaptureKit for one path — matches PromptStore's convention.
     private static var file: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Debrief/secrets.json")
+        RecordingStore.appSupportRoot().appendingPathComponent("secrets.json")
     }
 
     static func read(key: String) -> String? { load()[key] }
@@ -42,7 +45,12 @@ enum SecretStore {
     private static func write(_ all: [String: String]) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
+        // umask 0o077 so the atomic write's temp file is born 0600 — a post-write
+        // chmod leaves a 0644 window, and if it throws the file stays 0644 forever.
+        // ponytail: umask is process-global; safe here because secrets are only ever
+        // written from the Settings UI on the main actor (no concurrent file creation).
+        let previous = umask(0o077)
+        defer { umask(previous) }
         try JSONEncoder().encode(all).write(to: file, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }
