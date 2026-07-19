@@ -32,8 +32,11 @@ For each Markdown file not yet synced:
 3. **Notion** — create one page per interview: debrief prose, scores, action
    items, process notes; transcript inside a collapsed toggle.
 
-Sheet and Notion both receive the data by design — the Sheet is the at-a-glance
-pipeline view, Notion is the readable record.
+**The target is selectable.** A Google Sheet and a Notion database are equally
+valid destinations, and either can be named when the sync runs. The procedure does
+not branch on which one: read the target's schema, map by normalized name, write
+only what matched. Whether that schema arrives as a header row or a property list
+is a detail of reading it, not a different design.
 
 **The target schema is read every run, not stored.** Before writing, the sync
 reads the Sheet's header row and the Notion database's property list (names and
