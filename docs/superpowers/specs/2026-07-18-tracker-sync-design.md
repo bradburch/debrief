@@ -35,6 +35,27 @@ For each Markdown file not yet synced:
 Sheet and Notion both receive the data by design — the Sheet is the at-a-glance
 pipeline view, Notion is the readable record.
 
+**The target schema is read every run, not stored.** Before writing, the sync
+reads the Sheet's header row and the Notion database's property list (names and
+types), then maps Debrief's fields onto whatever is actually there by normalized
+name against a synonym list. There is no stored mapping to drift out of date, and
+adding a column on the tracker side needs no change here — it simply starts
+getting filled.
+
+The rules that keep this from corrupting a hand-maintained tracker are the
+negative ones:
+
+- **Never create, rename, delete, or reorder a column or property.**
+- **Never write to a column that wasn't matched.** A Debrief field with no home is
+  skipped and reported, not improvised into a new column.
+- **Respect the declared type.** A Notion `select` is written only if the value is
+  already among its options; otherwise the field is reported and skipped.
+- **Ambiguity is reported, never guessed.** If two columns both plausibly match one
+  field, write neither and say so.
+
+A missing target column is therefore a report, not an error, and never a silent
+overwrite of the wrong column.
+
 **Sync state:** none stored. `SessionMarkdown.filename(for:)` is deterministic
 (`yyyy-MM-dd-{company-slug}-{roundtype}-{id}.md`), so an existing Drive file or
 Sheet row with that session id means it is already synced. Re-running is

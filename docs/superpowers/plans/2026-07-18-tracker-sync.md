@@ -182,7 +182,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter Upc
 ```
 Expected: PASS, 6 tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```sh
 git add Sources/DebriefApp/UpcomingInterviews.swift Tests/DebriefAppTests/UpcomingInterviewsTests.swift
@@ -402,15 +402,34 @@ git commit -m "Offer scheduled interviews as recording pre-fills"
 
 This task has **no application code and no unit tests**. The sync runs in Claude's process over MCP; its correctness check is running it once against scratch targets and inspecting the result. A mocked test here would assert nothing real.
 
-- [ ] **Step 1: Collect the real target names**
+- [ ] **Step 1: Collect the real targets and read their live schemas**
 
 Before writing anything, get these four values from the user or via MCP — the runbook must name them exactly, not describe them:
-- the dedicated interview calendar's name
-- the target Google Sheet (name + tab)
+- the dedicated interview calendar's name (blocked: the Google Calendar token is expired and needs re-authorization)
+- the target Google Sheet (URL + tab) — one exists; the user is supplying it
 - the Drive folder for transcripts
 - the Notion parent page or database
 
-- [ ] **Step 2: Write the runbook**
+Then read each target's CURRENT schema and record it in the runbook as an example,
+not as a hardcoded contract: the Sheet's header row, and the Notion database's
+property names with their types.
+
+- [ ] **Step 2: Write the schema-adaptive mapping rules**
+
+The runbook must re-read the schema on EVERY run rather than storing a mapping.
+Document, with the field list on one side and the synonyms accepted on the other:
+
+- Map Debrief's fields (date, company, round type, advancement verdict, overall
+  score, weakness tags, transcript link) onto whatever columns/properties exist,
+  by normalized name against a synonym list.
+- **Never create, rename, delete, or reorder a column or property.**
+- **Never write to an unmatched column.** Report skipped fields.
+- **Respect declared types** — a Notion `select` value must already be among its
+  options, else report and skip.
+- **Ambiguity is reported, never guessed** — two plausible matches for one field
+  means write neither.
+
+- [ ] **Step 3: Write the runbook**
 
 Create `docs/tracker-sync.md` covering:
 
@@ -433,7 +452,7 @@ notes from the event description.
 
 **Cadence.** Both halves run on request, or under `/loop`.
 
-- [ ] **Step 3: Dry-run the push against scratch targets**
+- [ ] **Step 4: Dry-run the push against scratch targets**
 
 Create a throwaway Sheet, Drive folder, and Notion page. Run the push for a single
 already-exported session. Verify: the Drive file's contents match the local Markdown
@@ -443,12 +462,12 @@ byte-for-byte; the Sheet row's verdict and score match the file's `## Verdict` a
 Then run the same push a second time without changing anything. Expected: still one
 Drive file, still one Sheet row, still one Notion page — no duplicates.
 
-- [ ] **Step 4: Dry-run the pull**
+- [ ] **Step 5: Dry-run the pull**
 
 Run the pull against the real calendar. Verify `upcoming.json` parses, then confirm the
 entries appear under "From calendar" when starting a recording.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```sh
 git add docs/tracker-sync.md
