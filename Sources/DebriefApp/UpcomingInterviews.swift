@@ -31,6 +31,22 @@ enum UpcomingInterviews {
         return "\(entryCount) upcoming interview\(entryCount == 1 ? "" : "s") ready."
     }
 
+    /// The time window an entry must start within to be offered. Shared with
+    /// `CalendarEvents` so the file hand-off and the EventKit source can never drift
+    /// apart — a calendar event and a JSON entry for the same interview must appear
+    /// and expire together.
+    ///
+    /// ponytail: a one-hour grace window, so an interview that just started is
+    /// still offered. Widen it if you routinely record long after the slot.
+    ///
+    /// ponytail: a 14-day forward bound, so a mis-dated far-future entry (bad year,
+    /// stuck recurring event) doesn't linger in the menu forever. A count cap was
+    /// rejected in review — it would silently hide the soonest entries instead of the
+    /// stale ones. Widen by changing the `14 *` below.
+    static func window(now: Date) -> ClosedRange<Date> {
+        now.addingTimeInterval(-3600)...now.addingTimeInterval(14 * 24 * 3600)
+    }
+
     static func load(from url: URL = fileURL(), now: Date = Date()) -> [UpcomingInterview] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = JSONDecoder()
@@ -41,21 +57,14 @@ enum UpcomingInterviews {
             logger.error("upcoming.json is not a JSON array — ignoring")
             return []
         }
-        // ponytail: a one-hour grace window, so an interview that just started is
-        // still offered. Widen it if you routinely record long after the slot.
-        let cutoff = now.addingTimeInterval(-3600)
-        // ponytail: a 14-day forward bound, so a mis-dated far-future entry (bad year,
-        // stuck recurring event) doesn't linger in the menu forever. A count cap was
-        // rejected in review — it would silently hide the soonest entries instead of the
-        // stale ones. Widen by changing the `14 *` below.
-        let forwardBound = now.addingTimeInterval(14 * 24 * 3600)
+        let window = window(now: now)
         // A duplicated calendar invite (same event on two calendars, or double-booked)
         // decodes to two byte-identical entries. Dedup here, not in the UI: SwiftUI's
         // `ForEach(id: \.self)` would collide on identical Hashable values and drop or
         // misrender one of the rows.
         var seen = Set<UpcomingInterview>()
         return raw.compactMap(\.value)
-            .filter { $0.start >= cutoff && $0.start <= forwardBound }
+            .filter { window.contains($0.start) }
             .filter { seen.insert($0).inserted }
             .sorted { $0.start < $1.start }
     }
