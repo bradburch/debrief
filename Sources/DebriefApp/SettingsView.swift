@@ -205,7 +205,7 @@ struct SettingsView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                } else {
+                } else if calendarAuthStatus == .notDetermined || calendarAuthStatus == .writeOnly {
                     Button("Grant calendar access") {
                         Task {
                             _ = await CalendarEvents.shared.requestAccess()
@@ -214,11 +214,21 @@ struct SettingsView: View {
                     }
                     Text("macOS will show its own permission prompt, listing every calendar on this Mac — including a Google account added in System Settings.")
                         .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    // .denied or .restricted: requestFullAccessToEvents() returns false
+                    // without prompting once the user has already said no, so "Grant
+                    // calendar access" would be a silent no-op here. Send them to System
+                    // Settings instead, same idiom as Microphone/Screen Recording below.
+                    Button("Open Calendar settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!)
+                    }
+                    Text("Calendar access was denied. Enable it in System Settings, then click Refresh below.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Text("Debrief reads the calendar locally through macOS Calendar. It never contacts Google or any other calendar service — no network call, no OAuth, no tokens.")
                     .font(.caption).foregroundStyle(.secondary)
                 Divider()
-                Text("upcoming.json still works as a fallback when no calendar above is selected — handy if the account you interview from isn't added to macOS Calendar.")
+                Text("upcoming.json still works as a fallback — used when no calendar above is selected, or when the selected calendar simply has no upcoming interviews right now — handy if the account you interview from isn't added to macOS Calendar.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text(calendarStatusText)
                     .font(.caption).foregroundStyle(.secondary)

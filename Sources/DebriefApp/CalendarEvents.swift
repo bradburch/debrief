@@ -90,34 +90,83 @@ final class CalendarEvents {
     static func map(title: String?, notes: String?, start: Date?,
                     knownRoundTypes: [String], now: Date) -> UpcomingInterview? {
         guard let start, UpcomingInterviews.window(now: now).contains(start) else { return nil }
-        let company = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !company.isEmpty else { return nil }
+        let title = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
         let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let roundType = matchRoundType(in: title, known: knownRoundTypes)
+        let company = roundType.map { strippedCompany(from: title, roundType: $0) } ?? title
         return UpcomingInterview(
             company: company,
-            roundType: matchRoundType(in: [company, notes ?? ""].joined(separator: "\n"),
-                                      known: knownRoundTypes),
+            roundType: roundType,
             start: start,
             notes: (notes?.isEmpty ?? true) ? nil : notes)
     }
 
-    /// Finds a known round type named anywhere in the event's title or notes, matching
-    /// either the raw key (`system_design`) or its display form (`System Design`).
+    /// Finds a known round type named in the event's **title only**, matching either the
+    /// raw key (`system_design`) or its display form (`System Design`) as a whole word
+    /// (or, for a multi-word display form, a whole phrase) — never as a substring of a
+    /// longer word.
+    ///
+    /// Notes are deliberately excluded: an invite body is prose written by Zoom/Meet/Teams
+    /// or the organizer ("if you have technical difficulties, call the front desk"), not a
+    /// label, and routinely contains round-type-shaped words that don't describe the
+    /// interview. A title is a label someone chose on purpose. Word-boundary matching
+    /// closes the other half of the same failure mode: "technicalities" must not match
+    /// `technical`.
+    ///
     /// Returns nil when nothing matches — `AppEnvironment.apply` already ignores an
     /// unknown/absent round type, leaving the sticky picker value alone.
     ///
-    /// ponytail: plain substring matching, longest candidate first so `tech_deep_dive`
-    /// wins over a `technical` that happens to also appear. No fuzzy matching and no
-    /// LLM call — an interview invite that doesn't name its round just doesn't pre-fill
-    /// one. Upgrade path: match against the overlay's title line too.
+    /// ponytail: plain word-boundary matching, longest candidate first (ties broken by raw
+    /// value, so the result is deterministic regardless of `known`'s order) so
+    /// `tech_deep_dive` wins over a `technical` that happens to also appear. No fuzzy
+    /// matching and no LLM call — an interview invite that doesn't name its round in the
+    /// title just doesn't pre-fill one. Upgrade path: match against the overlay's title
+    /// line too.
     static func matchRoundType(in haystack: String, known: [String]) -> String? {
-        let hay = haystack.lowercased()
         let candidates = known.flatMap { raw -> [(needle: String, raw: String)] in
-            [(raw.lowercased(), raw), (RoundType(rawValue: raw).displayName.lowercased(), raw)]
+            [(raw, raw), (RoundType(rawValue: raw).displayName, raw)]
         }
-        return candidates
-            .sorted { $0.needle.count > $1.needle.count }
-            .first { hay.contains($0.needle) }?
-            .raw
+        .sorted { lhs, rhs in
+            if lhs.needle.count != rhs.needle.count { return lhs.needle.count > rhs.needle.count }
+            return lhs.raw > rhs.raw
+        }
+        return candidates.first { wordBoundaryRange(of: $0.needle, in: haystack) != nil }?.raw
+    }
+
+    /// Case-insensitive whole-word(s) search: `needle` must be bounded by non-word
+    /// characters (or the string's edges) on both sides, so "technical" cannot match
+    /// inside "technicalities" and "system_design" cannot match inside "asystem_designer".
+    private static func wordBoundaryRange(of needle: String, in haystack: String) -> Range<String.Index>? {
+        guard !needle.isEmpty else { return nil }
+        let pattern = "\\b\(NSRegularExpression.escapedPattern(for: needle))\\b"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let nsRange = NSRange(haystack.startIndex..., in: haystack)
+        guard let match = regex.firstMatch(in: haystack, options: [], range: nsRange) else { return nil }
+        return Range(match.range, in: haystack)
+    }
+
+    /// Removes the matched round-type mention (and the separators around it) from a
+    /// title, so "Stripe — System Design" pre-fills company "Stripe" instead of a
+    /// distinct row per round in the Pipeline/Trends company grouping.
+    ///
+    /// ponytail: strips one occurrence of the matched raw or display form, then trims a
+    /// fixed separator set (`—`, `-`, `/`, `:`) plus whitespace off both edges. It does
+    /// not parse compound titles beyond that (e.g. "Stripe / Brad — Onsite 2" is left
+    /// alone when no round type matches, and a matched round type in the middle of a
+    /// longer phrase only removes that word, not surrounding filler). If stripping would
+    /// leave nothing, the original title is kept — never an empty company. Upgrade path:
+    /// a real per-calendar/company title template if this stops being good enough.
+    private static func strippedCompany(from title: String, roundType: String) -> String {
+        var working = title
+        for needle in [roundType, RoundType(rawValue: roundType).displayName] {
+            if let range = wordBoundaryRange(of: needle, in: working) {
+                working.removeSubrange(range)
+                break
+            }
+        }
+        let stripSet = CharacterSet(charactersIn: "—-/:").union(.whitespacesAndNewlines)
+        let stripped = working.trimmingCharacters(in: stripSet)
+        return stripped.isEmpty ? title : stripped
     }
 }

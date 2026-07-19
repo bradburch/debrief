@@ -113,7 +113,8 @@ to *Debrief* instead of your terminal.
   system framework, so this is a database read, not a network call, and it
   works with a Google account too as long as it's added in System Settings.
   Turn it on in **Settings → Calendar pre-fill** (grant access, then choose
-  which calendar holds your interviews). Without a calendar chosen, the menu
+  which calendar holds your interviews). If no calendar is chosen, or the
+  chosen calendar simply has no upcoming interviews right now, the menu
   falls back to `~/Library/Application Support/Debrief/upcoming.json` if that
   file exists — a JSON array of objects:
   ```json
