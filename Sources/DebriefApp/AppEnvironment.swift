@@ -24,6 +24,28 @@ final class AppEnvironment: ObservableObject {
     @Published var recordRoundType: RoundType = .behavioral
     @Published var recordNotes = ""
 
+    /// Interviews read from the calendar hand-off file, offered as pre-fills when
+    /// starting a recording. Empty is the normal case, not an error.
+    @Published var upcoming: [UpcomingInterview] = []
+
+    func refreshUpcoming() {
+        upcoming = UpcomingInterviews.load()
+    }
+
+    /// Pre-fills the stop-form fields from a scheduled interview. The round type is
+    /// adopted only if the prompt store has an overlay for it — RoundType accepts any
+    /// string, but the Picker binds by tag, so an unknown value would blank the control.
+    func apply(_ item: UpcomingInterview) {
+        recordCompany = item.company
+        recordNotes = item.notes ?? ""
+        if let raw = item.roundType {
+            let candidate = RoundType(rawValue: raw)
+            if prompts.availableRoundTypes().contains(candidate) {
+                recordRoundType = candidate
+            }
+        }
+    }
+
     // Which tab MainWindow shows. Lives here so a view can navigate to another tab —
     // PipelineView jumping to a session — without plumbing a Binding through the hierarchy.
     @Published var selectedTab: MainTab? = .sessions
@@ -131,8 +153,17 @@ final class AppEnvironment: ObservableObject {
 
     /// Single start path shared by the two Record buttons and the notification's
     /// Record action; clears the call-detected notification so it can't be
-    /// clicked again mid-recording.
+    /// clicked again mid-recording. Refreshes `upcoming` here — not at each call
+    /// site — so all three paths (menu-bar button, in-window button, call-detected
+    /// notification) populate the same array, not just whichever caller remembered
+    /// to ask. That array feeds the "From calendar" menu rendered by
+    /// `RecordingControls`, which both MenuBarView and MainWindow embed, so the
+    /// menu itself is shown consistently in whichever surface is visible — this
+    /// refresh alone does not make a menu appear anywhere it isn't already wired
+    /// up. Must run before any `await` so the list is populated by the time the
+    /// UI renders the recording state.
     func startRecording() async {
+        refreshUpcoming()
         alerts?.clear()
         await coordinator.startRecording()
     }

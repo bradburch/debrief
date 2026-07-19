@@ -118,21 +118,10 @@ struct RecordingBar: View {
                     Label(warning, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow).font(.caption)
                 }
-                // ponytail: the Company/Round/Notes stop-form layout is reproduced from
-                // MenuBarView — ~12 lines read clearer than a shared @Binding-plumbed
-                // subview. The field *values* live on AppEnvironment (recordCompany/…), so
-                // the two surfaces share state and neither loses metadata the other typed.
-                // Upgrade path: extract a RecordingControls view if a third caller appears.
-                HStack {
-                    TextField("Company", text: $env.recordCompany).frame(maxWidth: 200)
-                    Picker("Round", selection: $env.recordRoundType) {
-                        ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
-                    }.frame(maxWidth: 220)
-                    TextField("Notes (optional)", text: $env.recordNotes)
-                    Button("Stop & Debrief") {
-                        Task { await env.stopAndDebrief() }
-                    }
-                }
+                // Shared with MenuBarView's popover form (RecordingControls.swift) so the
+                // two surfaces can't drift — this main-window bar used to lack the
+                // "From calendar" menu entirely because the form was duplicated by hand.
+                RecordingControls(axis: .horizontal)
             case .finalizing(let status):
                 HStack { ProgressView().controlSize(.small); Text(status) }
             case .failed(let message):

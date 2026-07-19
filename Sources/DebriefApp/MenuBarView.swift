@@ -38,14 +38,7 @@ struct MenuBarView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Divider()
-                TextField("Company", text: $env.recordCompany)
-                Picker("Round", selection: $env.recordRoundType) {
-                    ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
-                }
-                TextField("Notes (optional)", text: $env.recordNotes)
-                Button("Stop & Debrief") {
-                    Task { await env.stopAndDebrief() }
-                }
+                RecordingControls(axis: .vertical)
             case .finalizing(let status):
                 HStack { ProgressView().controlSize(.small); Text(status) }
                 if let p = env.coordinator.transcribeProgress, p.done < p.total {
