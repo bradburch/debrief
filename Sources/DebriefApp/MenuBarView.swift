@@ -19,6 +19,7 @@ struct MenuBarView: View {
                     Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
                 }
                 Button {
+                    env.refreshUpcoming()
                     Task { await env.startRecording() }
                 } label: {
                     Label(env.callDetected ? "Record this call" : "Start recording",
@@ -38,6 +39,15 @@ struct MenuBarView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Divider()
+                if !env.upcoming.isEmpty {
+                    Menu("From calendar") {
+                        ForEach(env.upcoming, id: \.self) { item in
+                            Button("\(item.company) — \(item.start, style: .time)") {
+                                env.apply(item)
+                            }
+                        }
+                    }
+                }
                 TextField("Company", text: $env.recordCompany)
                 Picker("Round", selection: $env.recordRoundType) {
                     ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }

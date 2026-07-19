@@ -1,5 +1,8 @@
 import XCTest
 @testable import DebriefApp
+import Store
+import CoachingEngine
+import CaptureKit
 
 final class UpcomingInterviewsTests: XCTestCase {
     /// Writes `json` to a fresh temp file and returns its URL.
@@ -66,5 +69,48 @@ final class UpcomingInterviewsTests: XCTestCase {
         """)
         let items = UpcomingInterviews.load(from: url, now: now)
         XCTAssertEqual(items.map(\.company), ["Sooner", "Later"])
+    }
+}
+
+@MainActor
+final class ApplyUpcomingTests: XCTestCase {
+    /// A round type the prompt store knows about is adopted.
+    func testApplyAdoptsKnownRoundType() throws {
+        let env = try makeTestEnv()
+        env.apply(UpcomingInterview(company: "Stripe", roundType: "system_design",
+                                    start: Date(), notes: "panel of 2"))
+        XCTAssertEqual(env.recordCompany, "Stripe")
+        XCTAssertEqual(env.recordRoundType, .systemDesign)
+        XCTAssertEqual(env.recordNotes, "panel of 2")
+    }
+
+    /// RoundType accepts any string, so an unknown value would decode fine but leave
+    /// the Picker with no matching tag. It must be ignored and the default kept.
+    func testApplyIgnoresUnknownRoundType() throws {
+        let env = try makeTestEnv()
+        env.recordRoundType = .behavioral
+        env.apply(UpcomingInterview(company: "Figma", roundType: "vibes_check",
+                                    start: Date(), notes: nil))
+        XCTAssertEqual(env.recordCompany, "Figma")
+        XCTAssertEqual(env.recordRoundType, .behavioral)
+        XCTAssertEqual(env.recordNotes, "")
+    }
+
+    private func makeTestEnv() throws -> AppEnvironment {
+        let db = try AppDatabase.inMemory()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let prompts = PromptStore(directory: promptDir)
+        try prompts.ensureDefaults()
+        let coaching = CoachingService(db: db, prompts: prompts, llm: OKStubLLM())
+        let coordinator = RecordingCoordinator(
+            db: db, coaching: coaching,
+            transcriber: FakeTranscriber(textForChunk: "final"),
+            makeMicRecorder: { FakeRecorder(writer: $0, seconds: 2) },
+            makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 2) },
+            recordingsRoot: root, chunkDuration: 1.0)
+        return AppEnvironment(db: db, prompts: prompts, coaching: coaching,
+                              coordinator: coordinator, alerts: nil)
     }
 }
