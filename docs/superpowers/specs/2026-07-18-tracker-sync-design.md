@@ -75,11 +75,13 @@ idempotent: overwrite the Drive file, update the matching row in place.
 3. The app reads it and offers those entries when starting a recording: picking
    "Stripe — System Design, 2pm" fills company, round type, and notes.
 
-App-side scope: read and decode one JSON file, and turn `MenuBarView`'s Company
-`TextField` into a combo box backed by it. Free-form typing must keep working
-exactly as it does today — the file is a convenience, never a requirement.
-A missing, stale, or malformed `upcoming.json` degrades to today's behavior
-silently; it is a cache, not state.
+App-side scope: read and decode one JSON file, and offer its entries through a
+separate "From calendar" menu next to the Company `TextField`, which is left
+unchanged. That's a better fit than a combo box: free-form typing is preserved
+by construction (the field itself doesn't change), rather than depending on a
+combo box passing typed input through untouched. A missing, stale, or
+malformed `upcoming.json` degrades to today's behavior silently; it is a
+cache, not state.
 
 Round type comes from the event only if it matches a known `RoundType`;
 otherwise the picker keeps its current default and the user selects.

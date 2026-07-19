@@ -155,9 +155,13 @@ final class AppEnvironment: ObservableObject {
     /// Record action; clears the call-detected notification so it can't be
     /// clicked again mid-recording. Refreshes `upcoming` here — not at each call
     /// site — so all three paths (menu-bar button, in-window button, call-detected
-    /// notification) populate the "From calendar" menu, not just whichever caller
-    /// remembered to ask. Must run before any `await` so the list is populated by
-    /// the time the UI renders the recording state.
+    /// notification) populate the same array, not just whichever caller remembered
+    /// to ask. That array feeds the "From calendar" menu rendered by
+    /// `RecordingControls`, which both MenuBarView and MainWindow embed, so the
+    /// menu itself is shown consistently in whichever surface is visible — this
+    /// refresh alone does not make a menu appear anywhere it isn't already wired
+    /// up. Must run before any `await` so the list is populated by the time the
+    /// UI renders the recording state.
     func startRecording() async {
         refreshUpcoming()
         alerts?.clear()

@@ -86,6 +86,39 @@ final class UpcomingInterviewsTests: XCTestCase {
         let items = UpcomingInterviews.load(from: url, now: now)
         XCTAssertEqual(items.map(\.company), ["Sooner", "Later"])
     }
+
+    /// Google Calendar commonly emits fractional-second timestamps
+    /// (`2026-07-20T18:00:00.000Z`), which plain `.iso8601` cannot parse — every entry
+    /// would silently decode to nil and the whole file would yield []. Must decode.
+    func testDecodesFractionalSecondTimestamp() throws {
+        let url = try tempFile("""
+        [{"company":"Stripe","start":"2025-06-15T18:00:00.000Z"}]
+        """)
+        let items = UpcomingInterviews.load(from: url, now: now)
+        XCTAssertEqual(items.map(\.company), ["Stripe"])
+    }
+
+    /// Whole-second timestamps (no fractional component) must keep decoding after adding
+    /// fractional-second support — the fallback path must still work.
+    func testDecodesWholeSecondTimestamp() throws {
+        let url = try tempFile("""
+        [{"company":"Figma","start":"2025-06-15T18:00:00Z"}]
+        """)
+        let items = UpcomingInterviews.load(from: url, now: now)
+        XCTAssertEqual(items.map(\.company), ["Figma"])
+    }
+
+    /// A far-future entry (bad year, stuck recurring event) must not linger in the menu
+    /// forever — a symmetric forward bound drops it just like the backward `cutoff` drops
+    /// stale entries.
+    func testDropsFarFutureEntries() throws {
+        let url = try tempFile("""
+        [{"company":"Soon","start":"2025-06-16T09:00:00Z"},
+         {"company":"WayOut","start":"2099-01-01T09:00:00Z"}]
+        """)
+        let items = UpcomingInterviews.load(from: url, now: now)
+        XCTAssertEqual(items.map(\.company), ["Soon"])
+    }
 }
 
 @MainActor

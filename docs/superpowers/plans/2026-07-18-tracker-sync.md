@@ -32,7 +32,7 @@
   - `struct UpcomingInterview: Codable, Hashable, Sendable { let company: String; let roundType: String?; let start: Date; let notes: String? }`
   - `enum UpcomingInterviews { static func fileURL() -> URL; static func load(from url: URL, now: Date) -> [UpcomingInterview] }`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `Tests/DebriefAppTests/UpcomingInterviewsTests.swift`:
 
@@ -109,7 +109,7 @@ final class UpcomingInterviewsTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run:
 ```sh
@@ -117,7 +117,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter Upc
 ```
 Expected: FAIL — `cannot find 'UpcomingInterviews' in scope`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `Sources/DebriefApp/UpcomingInterviews.swift`:
 
@@ -174,7 +174,7 @@ enum UpcomingInterviews {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run:
 ```sh
@@ -182,7 +182,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter Upc
 ```
 Expected: PASS, 6 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```sh
 git add Sources/DebriefApp/UpcomingInterviews.swift Tests/DebriefAppTests/UpcomingInterviewsTests.swift
@@ -203,7 +203,7 @@ git commit -m "Read upcoming interviews from a calendar hand-off file"
 - Consumes: `UpcomingInterview`, `UpcomingInterviews.load(from:now:)` from Task 1.
 - Produces: `AppEnvironment.upcoming: [UpcomingInterview]`, `AppEnvironment.refreshUpcoming()`, `AppEnvironment.apply(_ item: UpcomingInterview)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `Tests/DebriefAppTests/UpcomingInterviewsTests.swift`, inside a new class at the end of the file:
 
@@ -264,7 +264,7 @@ import CoachingEngine
 import CaptureKit
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run:
 ```sh
@@ -272,7 +272,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter App
 ```
 Expected: FAIL — `value of type 'AppEnvironment' has no member 'apply'`.
 
-- [ ] **Step 3: Add the published list and apply method**
+- [x] **Step 3: Add the published list and apply method**
 
 In `Sources/DebriefApp/AppEnvironment.swift`, immediately after line 25 (`@Published var recordNotes = ""`), add:
 
@@ -300,7 +300,7 @@ In `Sources/DebriefApp/AppEnvironment.swift`, immediately after line 25 (`@Publi
     }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run:
 ```sh
@@ -308,7 +308,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter App
 ```
 Expected: PASS, 2 tests.
 
-- [ ] **Step 5: Add the menu to the recording form**
+- [x] **Step 5: Add the menu to the recording form**
 
 In `Sources/DebriefApp/MenuBarView.swift`, replace line 41:
 
@@ -333,7 +333,7 @@ with:
 
 The `TextField` is unchanged, so free-form typing keeps working by construction.
 
-- [ ] **Step 6: Refresh the list when a recording starts**
+- [x] **Step 6: Refresh the list when a recording starts**
 
 In `Sources/DebriefApp/MenuBarView.swift`, replace the `.idle` case's record button action (line 22):
 
@@ -348,7 +348,7 @@ with:
                     Task { await env.startRecording() }
 ```
 
-- [ ] **Step 7: Build and verify the app launches**
+- [x] **Step 7: Build and verify the app launches**
 
 Run:
 ```sh
@@ -357,7 +357,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
 ```
 Expected: builds clean; the menu-bar item appears. With no `upcoming.json` present, the recording form looks exactly as it does today (no "From calendar" menu).
 
-- [ ] **Step 8: Verify the pre-fill against a real file**
+- [x] **Step 8: Verify the pre-fill against a real file**
 
 Write a fixture, then start a recording from the menu bar:
 
@@ -370,18 +370,18 @@ EOF
 
 Expected: "From calendar" appears; choosing "Stripe — 6:00 PM" fills Company with `Stripe`, sets Round to `System Design`, and fills Notes with `panel of 2`. Delete the file afterward.
 
-- [ ] **Step 9: Record the manual check**
+- [x] **Step 9: Record the manual check**
 
 Append to `docs/manual-test-checklist.md`:
 
 ```markdown
-- [ ] **Calendar pre-fill.** With an `upcoming.json` in Application Support, start a
+- [x] **Calendar pre-fill.** With an `upcoming.json` in Application Support, start a
       recording: "From calendar" lists the entries, and choosing one fills company,
       round type, and notes. With the file absent, the menu is hidden and typing a
       company by hand works as before.
 ```
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```sh
 git add Sources/DebriefApp/AppEnvironment.swift Sources/DebriefApp/MenuBarView.swift \
@@ -401,6 +401,11 @@ git commit -m "Offer scheduled interviews as recording pre-fills"
 - Produces: nothing consumed by later tasks. This task is documentation plus one live verification.
 
 This task has **no application code and no unit tests**. The sync runs in Claude's process over MCP; its correctness check is running it once against scratch targets and inspecting the result. A mocked test here would assert nothing real.
+
+> **Not on this branch.** The push half (this task) is deliberately NOT implemented here.
+> It's blocked on a Google Calendar re-auth (the token is expired — see Step 1) and on
+> getting the live tracker's schema (Sheet/Notion) from the user. `tracker-sync` ships
+> only the pull half (Tasks 1–2: reading `upcoming.json` into the recording form).
 
 - [ ] **Step 1: Collect the real targets and read their live schemas**
 

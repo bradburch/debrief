@@ -38,29 +38,7 @@ struct MenuBarView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Divider()
-                if !env.upcoming.isEmpty {
-                    Menu("From calendar") {
-                        ForEach(env.upcoming, id: \.self) { item in
-                            Button {
-                                env.apply(item)
-                            } label: {
-                                // Text(verbatim:) for the company: Button("\(...)") builds a
-                                // LocalizedStringKey, so a company name containing "%" would be
-                                // parsed as a format specifier. Concatenated Text keeps the
-                                // `.time` style on the date portion.
-                                Text(verbatim: item.company) + Text(" — ") + Text(item.start, style: .time)
-                            }
-                        }
-                    }
-                }
-                TextField("Company", text: $env.recordCompany)
-                Picker("Round", selection: $env.recordRoundType) {
-                    ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
-                }
-                TextField("Notes (optional)", text: $env.recordNotes)
-                Button("Stop & Debrief") {
-                    Task { await env.stopAndDebrief() }
-                }
+                RecordingControls(axis: .vertical)
             case .finalizing(let status):
                 HStack { ProgressView().controlSize(.small); Text(status) }
                 if let p = env.coordinator.transcribeProgress, p.done < p.total {
