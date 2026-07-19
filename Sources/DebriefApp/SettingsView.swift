@@ -18,6 +18,8 @@ struct SettingsView: View {
     @AppStorage("exportDirectory") private var exportDir = ""
     @State private var relaunchPrompt: RelaunchPrompt?
     @State private var relaunchError: String?
+    @State private var calendarStatusText = ""
+    @State private var calendarFileExists = false
     private struct RelaunchPrompt: Identifiable { let id = UUID(); let dir: String }
 
     private let modelOptions: [(label: String, id: String)] = [
@@ -178,6 +180,18 @@ struct SettingsView: View {
                     Text(exportResult).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section("Calendar pre-fill") {
+                Text(calendarStatusText)
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(UpcomingInterviews.fileURL().path)
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Reveal in Finder") { revealCalendarFile() }
+                    Button("Refresh") { refreshCalendarStatus() }
+                }
+                Text("Written by an external tool (Claude, via MCP) — Debrief itself never contacts Google or any calendar service. Timestamps must be whole-second ISO8601 UTC, like 2026-07-20T18:00:00Z.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Data locations") {
                 Text("Where Debrief stores its files. Changing a location moves the existing data and relaunches Debrief.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -211,6 +225,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear(perform: refreshCalendarStatus)
         .confirmationDialog("Re-run every past debrief?", isPresented: $confirmingRecoach) {
             Button("Re-run all", role: .destructive) { env.startRecoach() }
             Button("Cancel", role: .cancel) {}
@@ -223,6 +238,25 @@ struct SettingsView: View {
             Button("Later", role: .cancel) {}
         } message: {
             Text("Debrief will move your \(relaunchPrompt?.dir.lowercased() ?? "data") to the new folder on the next launch.")
+        }
+    }
+
+    /// Recomputes from disk on demand — never cached across the app's lifetime, since
+    /// the file is written by an external process (Claude, via MCP) at any time.
+    private func refreshCalendarStatus() {
+        let url = UpcomingInterviews.fileURL()
+        calendarFileExists = FileManager.default.fileExists(atPath: url.path)
+        let entryCount = UpcomingInterviews.load().count
+        calendarStatusText = UpcomingInterviews.statusText(fileExists: calendarFileExists, entryCount: entryCount)
+    }
+
+    private func revealCalendarFile() {
+        let url = UpcomingInterviews.fileURL()
+        if calendarFileExists {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            // Never select a nonexistent file — reveal the containing directory instead.
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
         }
     }
 

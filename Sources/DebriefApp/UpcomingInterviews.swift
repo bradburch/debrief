@@ -22,6 +22,15 @@ enum UpcomingInterviews {
         RecordingStore.appSupportRoot().appendingPathComponent("upcoming.json")
     }
 
+    /// Pure string-building for the Settings "Calendar pre-fill" status line, split out
+    /// of the view body so the three states (absent / present-but-empty / N ready) and the
+    /// singular/plural boundary are unit-testable without driving SwiftUI.
+    static func statusText(fileExists: Bool, entryCount: Int) -> String {
+        guard fileExists else { return "No upcoming.json found." }
+        guard entryCount > 0 else { return "upcoming.json found, but no upcoming interviews in it." }
+        return "\(entryCount) upcoming interview\(entryCount == 1 ? "" : "s") ready."
+    }
+
     static func load(from url: URL = fileURL(), now: Date = Date()) -> [UpcomingInterview] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = JSONDecoder()
