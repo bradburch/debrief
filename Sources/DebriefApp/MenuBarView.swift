@@ -19,7 +19,6 @@ struct MenuBarView: View {
                     Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
                 }
                 Button {
-                    env.refreshUpcoming()
                     Task { await env.startRecording() }
                 } label: {
                     Label(env.callDetected ? "Record this call" : "Start recording",
@@ -42,8 +41,14 @@ struct MenuBarView: View {
                 if !env.upcoming.isEmpty {
                     Menu("From calendar") {
                         ForEach(env.upcoming, id: \.self) { item in
-                            Button("\(item.company) — \(item.start, style: .time)") {
+                            Button {
                                 env.apply(item)
+                            } label: {
+                                // Text(verbatim:) for the company: Button("\(...)") builds a
+                                // LocalizedStringKey, so a company name containing "%" would be
+                                // parsed as a format specifier. Concatenated Text keeps the
+                                // `.time` style on the date portion.
+                                Text(verbatim: item.company) + Text(" — ") + Text(item.start, style: .time)
                             }
                         }
                     }

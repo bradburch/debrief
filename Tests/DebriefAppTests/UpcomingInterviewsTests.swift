@@ -61,6 +61,22 @@ final class UpcomingInterviewsTests: XCTestCase {
         XCTAssertEqual(items.map(\.company), ["Stripe", "Figma"])
     }
 
+    /// A duplicated calendar invite (same event synced from two calendars, or a
+    /// double-booked entry) decodes to two byte-identical entries. Left undeduped, these
+    /// produce identical SwiftUI `ForEach(id: \.self)` identities, which SwiftUI drops or
+    /// misrenders. The loader must collapse them before the UI ever sees the list.
+    func testDedupsDuplicateEntries() throws {
+        let url = try tempFile("""
+        [{"company":"Stripe","roundType":"system_design",
+          "start":"2025-06-15T18:00:00Z","notes":"panel of 2"},
+         {"company":"Stripe","roundType":"system_design",
+          "start":"2025-06-15T18:00:00Z","notes":"panel of 2"},
+         {"company":"Figma","start":"2025-06-15T20:00:00Z"}]
+        """)
+        let items = UpcomingInterviews.load(from: url, now: now)
+        XCTAssertEqual(items.map(\.company), ["Stripe", "Figma"])
+    }
+
     func testDropsStaleEntriesAndSortsByStart() throws {
         let url = try tempFile("""
         [{"company":"Later","start":"2025-06-15T20:00:00Z"},
@@ -86,23 +102,57 @@ final class ApplyUpcomingTests: XCTestCase {
 
     /// RoundType accepts any string, so an unknown value would decode fine but leave
     /// the Picker with no matching tag. It must be ignored and the default kept.
+    /// Seeds `.systemDesign` (not `.behavioral`, the property's own default) so a
+    /// passing assertion proves the value was left untouched, not merely that it
+    /// still equals whatever `recordRoundType` defaults to.
     func testApplyIgnoresUnknownRoundType() throws {
         let env = try makeTestEnv()
-        env.recordRoundType = .behavioral
+        env.recordRoundType = .systemDesign
         env.apply(UpcomingInterview(company: "Figma", roundType: "vibes_check",
                                     start: Date(), notes: nil))
         XCTAssertEqual(env.recordCompany, "Figma")
-        XCTAssertEqual(env.recordRoundType, .behavioral)
+        XCTAssertEqual(env.recordRoundType, .systemDesign)
         XCTAssertEqual(env.recordNotes, "")
     }
 
-    private func makeTestEnv() throws -> AppEnvironment {
+    /// `apply` gates adoption on `prompts.availableRoundTypes()`, which is DIRECTORY-driven
+    /// (see PromptStore.availableRoundTypes), not on `RoundType.builtins`. A user-dropped
+    /// overlay file for a custom round type is a valid, selectable round type even though it
+    /// isn't one of the shipped builtins. `system_design`/`vibes_check` alone can't prove
+    /// this: both are decided identically by `builtins.contains` and by
+    /// `availableRoundTypes().contains`, so this test writes a genuinely custom overlay
+    /// (`take_home_review.md`) that only the directory-driven guard recognizes.
+    ///
+    /// Verified this fails against a `RoundType.builtins.contains(candidate)` stub: swapping
+    /// the guard in `apply` to that expression left `recordRoundType` at the seeded
+    /// `.behavioral` default instead of adopting `take_home_review`, failing the
+    /// `XCTAssertEqual(env.recordRoundType, RoundType(rawValue: "take_home_review"))` line
+    /// below. Restored the correct `prompts.availableRoundTypes().contains(candidate)` guard
+    /// afterward.
+    func testApplyAdoptsCustomRoundType() throws {
+        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let env = try makeTestEnv(promptDir: promptDir) { dir in
+            try Data("## Scored dimensions\n\n- rigor: how rigorously they walked the take-home\n"
+                .utf8).write(to: dir.appendingPathComponent("take_home_review.md"))
+        }
+        env.recordRoundType = .behavioral
+        env.apply(UpcomingInterview(company: "Anduril", roundType: "take_home_review",
+                                    start: Date(), notes: nil))
+        XCTAssertEqual(env.recordCompany, "Anduril")
+        XCTAssertEqual(env.recordRoundType, RoundType(rawValue: "take_home_review"))
+    }
+
+    private func makeTestEnv(promptDir: URL = FileManager.default.temporaryDirectory
+                                .appendingPathComponent(UUID().uuidString),
+                              configurePrompts: (URL) throws -> Void = { _ in }) throws -> AppEnvironment {
         let db = try AppDatabase.inMemory()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        addTeardownBlock { try? FileManager.default.removeItem(at: promptDir) }
         let prompts = PromptStore(directory: promptDir)
         try prompts.ensureDefaults()
+        try configurePrompts(promptDir)
         let coaching = CoachingService(db: db, prompts: prompts, llm: OKStubLLM())
         let coordinator = RecordingCoordinator(
             db: db, coaching: coaching,

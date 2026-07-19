@@ -35,8 +35,14 @@ enum UpcomingInterviews {
         // ponytail: a one-hour grace window, so an interview that just started is
         // still offered. Widen it if you routinely record long after the slot.
         let cutoff = now.addingTimeInterval(-3600)
+        // A duplicated calendar invite (same event on two calendars, or double-booked)
+        // decodes to two byte-identical entries. Dedup here, not in the UI: SwiftUI's
+        // `ForEach(id: \.self)` would collide on identical Hashable values and drop or
+        // misrender one of the rows.
+        var seen = Set<UpcomingInterview>()
         return raw.compactMap(\.value)
             .filter { $0.start >= cutoff }
+            .filter { seen.insert($0).inserted }
             .sorted { $0.start < $1.start }
     }
 
