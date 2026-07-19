@@ -29,12 +29,30 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
    Settings → Retry pending debriefs completes it after re-adding the key.
 9. **Crash recovery**: start a recording, `kill -9` the Debrief process mid-call, relaunch.
    The popover offers recovery; recovering produces a session from the partial audio.
-10. **Audio deletion**: with "Keep raw audio" off, confirm
-    `~/Library/Application Support/Debrief/recordings/` is empty after a successful debrief.
-- [ ] Open a session, paste text into "Grading criteria for this interview", click Regenerate; the new debrief reflects the criteria. Reopen the session — the criteria text is still there.
-- [ ] Settings → provider "Local / OpenAI-compatible" + running Ollama: debrief completes; stop Ollama: session marks failed, retry works after restart
-- [ ] Drop `take_home_review.md` into the prompts folder: "Take Home Review" appears in the round picker; delete the file: existing sessions of that type still debrief (base rubric only)
-- [ ] **Calendar pre-fill.** With an `upcoming.json` in Application Support, start a
-      recording: "From calendar" lists the entries, and choosing one fills company,
-      round type, and notes. With the file absent, the menu is hidden and typing a
-      company by hand works as before.
+10. **Audio deletion**: with "Keep raw audio" off, confirm the recordings folder (default
+    `~/Library/Application Support/Debrief/recordings/`, or wherever Settings → Data
+    locations points it) is empty after a successful debrief.
+11. **Regenerate with criteria**: open a session, paste text into "Grading criteria for
+    this interview", click Regenerate; the new debrief reflects the criteria. Reopen the
+    session — the criteria text is still there.
+12. **Local LLM provider**: Settings → provider "Local / OpenAI-compatible" + running
+    Ollama: debrief completes; stop Ollama: session marks failed, retry works after restart.
+13. **Custom round type**: drop `take_home_review.md` into the prompts folder: "Take Home
+    Review" appears in the round picker; delete the file: existing sessions of that type
+    still debrief (base rubric only).
+14. **Calendar pre-fill**: Settings → Calendar pre-fill: with no calendar selected
+    (or access not yet granted), Debrief falls back to `upcoming.json` — with an
+    `upcoming.json` in Application Support, start a recording: "From calendar" lists
+    the entries, and choosing one fills company, round type, and notes. With both the
+    file absent and no calendar selected, the menu is hidden and typing a company by
+    hand works as before.
+15. **Calendar grant + picker**: Settings → Calendar pre-fill, click "Grant calendar
+    access": macOS shows its own permission dialog listing every calendar on the Mac
+    (including a Google account added in System Settings, if any). After allowing,
+    the section switches to a calendar Picker and a status line ("Granted"); pick a
+    calendar with an upcoming interview on it and the status line reports how many
+    are visible. Start a recording: "From calendar" now lists entries sourced from
+    the chosen calendar (title, notes, and any recognizable round type), with no
+    network activity involved — this is a local read of macOS Calendar. Denying the
+    prompt (or Privacy & Security > Calendars later) leaves the section showing
+    "Denied" and Debrief keeps using `upcoming.json`.

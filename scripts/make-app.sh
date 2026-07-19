@@ -28,6 +28,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Debrief records your side of interview calls to transcribe and coach you.</string>
+    <!-- Required for EKEventStore.requestFullAccessToEvents() (CalendarEvents.swift) —
+         without this key the request CRASHES instead of prompting. Read-only: Debrief
+         pre-fills a recording's company/round type/notes from your scheduled interviews,
+         entirely on-device, and never sends calendar data anywhere. -->
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Debrief reads your calendar locally to pre-fill Company, Round type, and Notes from your scheduled interviews. Nothing is sent off this Mac.</string>
 </dict></plist>
 PLIST
 # Sign with a STABLE identity so macOS TCC (mic/Screen Recording) grants survive

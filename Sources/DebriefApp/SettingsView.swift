@@ -1,6 +1,7 @@
 import SwiftUI
 import CoachingEngine
 import CaptureKit
+import EventKit
 
 struct SettingsView: View {
     @EnvironmentObject var env: AppEnvironment
@@ -18,6 +19,12 @@ struct SettingsView: View {
     @AppStorage("exportDirectory") private var exportDir = ""
     @State private var relaunchPrompt: RelaunchPrompt?
     @State private var relaunchError: String?
+    @State private var calendarStatusText = ""
+    @State private var calendarFileExists = false
+    @AppStorage("interviewCalendarID") private var interviewCalendarID = ""
+    @State private var calendarAuthStatus: EKAuthorizationStatus = CalendarEvents.authorizationStatus
+    @State private var calendars: [(id: String, title: String)] = []
+    @State private var calendarUpcomingText = ""
     private struct RelaunchPrompt: Identifiable { let id = UUID(); let dir: String }
 
     private let modelOptions: [(label: String, id: String)] = [
@@ -178,6 +185,60 @@ struct SettingsView: View {
                     Text(exportResult).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section("Calendar pre-fill") {
+                Text("Status: \(authorizationStatusText(calendarAuthStatus))")
+                    .font(.caption).foregroundStyle(.secondary)
+                if calendarAuthStatus == .fullAccess {
+                    if calendars.isEmpty {
+                        Text("No calendars found on this Mac.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Picker("Interview calendar", selection: $interviewCalendarID) {
+                            Text("None selected").tag("")
+                            ForEach(calendars, id: \.id) { cal in
+                                Text(cal.title).tag(cal.id)
+                            }
+                        }
+                        .onChange(of: interviewCalendarID) { refreshCalendarSection() }
+                        if !interviewCalendarID.isEmpty {
+                            Text(calendarUpcomingText)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } else if calendarAuthStatus == .notDetermined || calendarAuthStatus == .writeOnly {
+                    Button("Grant calendar access") {
+                        Task {
+                            _ = await CalendarEvents.shared.requestAccess()
+                            refreshCalendarSection()
+                        }
+                    }
+                    Text("macOS will show its own permission prompt, listing every calendar on this Mac — including a Google account added in System Settings.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    // .denied or .restricted: requestFullAccessToEvents() returns false
+                    // without prompting once the user has already said no, so "Grant
+                    // calendar access" would be a silent no-op here. Send them to System
+                    // Settings instead, same idiom as Microphone/Screen Recording below.
+                    Button("Open Calendar settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!)
+                    }
+                    Text("Calendar access was denied. Enable it in System Settings, then click Refresh below.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Debrief reads the calendar locally through macOS Calendar. It never contacts Google or any other calendar service — no network call, no OAuth, no tokens.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Text("upcoming.json still works as a fallback — used when no calendar above is selected, or when the selected calendar simply has no upcoming interviews right now — handy if the account you interview from isn't added to macOS Calendar.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(calendarStatusText)
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(UpcomingInterviews.fileURL().path)
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Reveal in Finder") { revealCalendarFile() }
+                    Button("Refresh") { refreshCalendarSection() }
+                }
+            }
             Section("Data locations") {
                 Text("Where Debrief stores its files. Changing a location moves the existing data and relaunches Debrief.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -211,6 +272,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear(perform: refreshCalendarSection)
         .confirmationDialog("Re-run every past debrief?", isPresented: $confirmingRecoach) {
             Button("Re-run all", role: .destructive) { env.startRecoach() }
             Button("Cancel", role: .cancel) {}
@@ -223,6 +285,57 @@ struct SettingsView: View {
             Button("Later", role: .cancel) {}
         } message: {
             Text("Debrief will move your \(relaunchPrompt?.dir.lowercased() ?? "data") to the new folder on the next launch.")
+        }
+    }
+
+    /// Recomputes from disk on demand — never cached across the app's lifetime, since
+    /// the file is written by an external process (Claude, via MCP) at any time.
+    private func refreshCalendarStatus() {
+        let url = UpcomingInterviews.fileURL()
+        calendarFileExists = FileManager.default.fileExists(atPath: url.path)
+        let entryCount = UpcomingInterviews.load().count
+        calendarStatusText = UpcomingInterviews.statusText(fileExists: calendarFileExists, entryCount: entryCount)
+    }
+
+    private func authorizationStatusText(_ status: EKAuthorizationStatus) -> String {
+        switch status {
+        case .fullAccess: return "Granted"
+        case .denied: return "Denied — enable in System Settings > Privacy & Security > Calendars"
+        case .restricted: return "Restricted by device management"
+        case .writeOnly: return "Write-only access — not enough to read events, request access again"
+        case .notDetermined: return "Not yet requested"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    /// Recomputes the calendar list and the selected calendar's upcoming count. Cheap
+    /// enough to call on appear, on every refresh, and after a grant/selection change —
+    /// EventKit's own store is already long-lived (`CalendarEvents.shared`).
+    private func refreshCalendarSection() {
+        refreshCalendarStatus()
+        calendarAuthStatus = CalendarEvents.authorizationStatus
+        guard calendarAuthStatus == .fullAccess else {
+            calendars = []
+            return
+        }
+        calendars = CalendarEvents.shared.calendars()
+        guard !interviewCalendarID.isEmpty else {
+            calendarUpcomingText = ""
+            return
+        }
+        let knownRoundTypes = env.prompts.availableRoundTypes().map(\.rawValue)
+        let count = CalendarEvents.shared.upcoming(calendarID: interviewCalendarID,
+                                                    knownRoundTypes: knownRoundTypes).count
+        calendarUpcomingText = "\(count) upcoming interview\(count == 1 ? "" : "s") visible in this calendar."
+    }
+
+    private func revealCalendarFile() {
+        let url = UpcomingInterviews.fileURL()
+        if calendarFileExists {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            // Never select a nonexistent file — reveal the containing directory instead.
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
         }
     }
 
