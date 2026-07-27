@@ -56,3 +56,12 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
     network activity involved — this is a local read of macOS Calendar. Denying the
     prompt (or Privacy & Security > Calendars later) leaves the section showing
     "Denied" and Debrief keeps using `upcoming.json`.
+16. **Continuity/cellular calls**: known issue, not yet confirmed root cause — Call Relay
+    (an iPhone cellular call answered on the Mac) may not expose the caller's audio to
+    ScreenCaptureKit's system-audio tap, unlike Zoom/Meet/FaceTime/browser calls. To test:
+    record a FaceTime Audio call first (control — confirm "Them" bar moves normally), then
+    back-to-back record a Continuity cellular call and watch the "Them" bar live while the
+    caller talks. If "Them" stays flat only on the Continuity call, this is very likely a
+    platform-level exclusion of Call Relay audio from the system-audio render mix, not a
+    Debrief bug — no filter change in `SystemAudioRecorder` can reach audio that never
+    enters that mix. Note the result here once confirmed either way.
