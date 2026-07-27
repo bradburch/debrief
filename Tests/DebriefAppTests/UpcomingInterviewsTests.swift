@@ -119,6 +119,30 @@ final class UpcomingInterviewsTests: XCTestCase {
         let items = UpcomingInterviews.load(from: url, now: now)
         XCTAssertEqual(items.map(\.company), ["Soon"])
     }
+    // MARK: - statusText (Settings "Calendar pre-fill" section)
+
+    func testStatusTextFileAbsent() {
+        XCTAssertEqual(UpcomingInterviews.statusText(fileExists: false, entryCount: 0),
+                        "No upcoming.json found.")
+        // Even a bogus nonzero count must not be trusted when the file itself is absent.
+        XCTAssertEqual(UpcomingInterviews.statusText(fileExists: false, entryCount: 3),
+                        "No upcoming.json found.")
+    }
+
+    func testStatusTextFilePresentButEmpty() {
+        XCTAssertEqual(UpcomingInterviews.statusText(fileExists: true, entryCount: 0),
+                        "upcoming.json found, but no upcoming interviews in it.")
+    }
+
+    func testStatusTextSingularEntry() {
+        XCTAssertEqual(UpcomingInterviews.statusText(fileExists: true, entryCount: 1),
+                        "1 upcoming interview ready.")
+    }
+
+    func testStatusTextPluralEntries() {
+        XCTAssertEqual(UpcomingInterviews.statusText(fileExists: true, entryCount: 2),
+                        "2 upcoming interviews ready.")
+    }
 }
 
 @MainActor

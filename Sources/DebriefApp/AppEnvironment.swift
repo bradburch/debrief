@@ -28,7 +28,26 @@ final class AppEnvironment: ObservableObject {
     /// starting a recording. Empty is the normal case, not an error.
     @Published var upcoming: [UpcomingInterview] = []
 
+    /// Prefers EventKit (live macOS Calendar, including a synced Google account) over the
+    /// `upcoming.json` hand-off, falling back to the file when the calendar isn't
+    /// authorized, isn't configured (no `interviewCalendarID` in Settings), or is simply
+    /// empty right now — so an unconfigured install behaves exactly as before.
+    ///
+    /// Synchronous end to end: `CalendarEvents.upcoming(calendarID:...)` and
+    /// `EKEventStore.events(matching:)` never await, which matters because this must run
+    /// before `startRecording`'s first `await` so the pre-fill list is ready before the
+    /// form renders (see the comment on `startRecording`). Do not add an `await` here.
     func refreshUpcoming() {
+        let calendarID = UserDefaults.standard.string(forKey: "interviewCalendarID") ?? ""
+        if CalendarEvents.isAuthorized, !calendarID.isEmpty {
+            let knownRoundTypes = prompts.availableRoundTypes().map(\.rawValue)
+            let fromCalendar = CalendarEvents.shared.upcoming(calendarID: calendarID,
+                                                               knownRoundTypes: knownRoundTypes)
+            if !fromCalendar.isEmpty {
+                upcoming = fromCalendar
+                return
+            }
+        }
         upcoming = UpcomingInterviews.load()
     }
 

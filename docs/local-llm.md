@@ -10,8 +10,10 @@ providers are covered at the end.
 Local models produce noticeably weaker coaching than Claude: shallower
 feedback, occasional invented quotes, and (rarely) malformed output. When
 output can't be parsed the session shows **failed** — use "Retry pending
-debriefs" in Settings or "Generate debrief" on the failed session. A 14B-class
-model is the practical floor for useful feedback.
+debriefs" in Settings, or click "Generate debrief" / "Regenerate" (the button
+reads "Generate debrief" until a session has a debrief, then "Regenerate") on
+the session itself. A 14B-class model is the practical floor for useful
+feedback.
 
 ## 1. Install Ollama and pull a model
 

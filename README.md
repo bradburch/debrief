@@ -35,8 +35,9 @@ call detected ──▶ record (mic + system audio, 16 kHz WAV chunks to disk)
                                                        [00:03:18] YOU:  …
                      │
                      ▼
-              coaching debrief (Claude API) ──▶ scores · weakness tags ·
-                                                highlights · action items
+              coaching debrief (Claude API, or a local model) ──▶ advancement
+                                    verdict · scores · weakness tags ·
+                                    highlights · action items
 ```
 
 Audio chunks are flushed to disk **during** capture, so a crash mid-interview
@@ -79,14 +80,24 @@ to *Debrief* instead of your terminal.
 
 ## First-run setup
 
-1. **Grant permissions.** On first launch macOS asks for **Microphone**; the
-   first time you record it asks for **Screen Recording** (that's how the
-   other side's audio is captured). Grant both, then relaunch if prompted.
+1. **Grant permissions.** On first launch macOS asks for **Microphone** and
+   **Notifications** (the notification's "Record" action button doesn't work
+   without it); the first time you record it asks for **Screen Recording**
+   (that's how the other side's audio is captured). Grant all three, then
+   relaunch if prompted.
 2. **Add your Claude API key.** Open the main window → **Settings**, paste a key
-   starting with `sk-ant-` (stored in the macOS Keychain). Alternatively, export
-   `ANTHROPIC_API_KEY` before launching. Without a key, recordings and
+   starting with `sk-ant-`. It's written to a `secrets.json` file under
+   Application Support, created with 0600 permissions (readable only by your
+   user account) — deliberately not the Keychain, since Debrief's self-signed,
+   no-Team-ID signature would make the Keychain re-prompt for your password on
+   every rebuild (see `Sources/DebriefApp/SecretStore.swift`). Alternatively,
+   export `ANTHROPIC_API_KEY` before launching. Without a key, recordings and
    transcripts still work — debriefs stay pending until a key is set, then
    **Settings → Retry pending debriefs** catches them up.
+3. **First transcription downloads a model.** The first time Debrief
+   transcribes audio, WhisperKit fetches its speech-recognition model (a
+   few hundred MB) from Hugging Face — this needs network access once. After
+   that, transcription runs fully offline.
 
 ## Using it
 
@@ -95,32 +106,83 @@ to *Debrief* instead of your terminal.
   auto-records. While recording, the popover shows a live level bar for each
   stream; if one stops moving (e.g. AirPods routed system audio somewhere else),
   you'll get a warning mid-call instead of discovering a dead track afterward.
-- **Stop & debrief.** Tag the session with the company and round type
-  (recruiter screen / behavioral / technical / system design), hit **Stop &
-  Debrief**, and within a minute or two you get scored feedback with clickable
-  transcript highlights and concrete action items.
+- **Pre-fill from your calendar.** The recording form's **From calendar** menu
+  (menu-bar popover and main window both have it) lists your upcoming
+  interviews and fills in company, round type, and notes when you pick one.
+  Debrief reads this straight from macOS Calendar via EventKit — a local
+  system framework, so this is a database read, not a network call, and it
+  works with a Google account too as long as it's added in System Settings.
+  Turn it on in **Settings → Calendar pre-fill** (grant access, then choose
+  which calendar holds your interviews). If no calendar is chosen, or the
+  chosen calendar simply has no upcoming interviews right now, the menu
+  falls back to `~/Library/Application Support/Debrief/upcoming.json` if that
+  file exists — a JSON array of objects:
+  ```json
+  [{"company": "Acme", "roundType": "technical", "start": "2026-07-20T18:00:00Z", "notes": "Panel round"}]
+  ```
+  `roundType` and `notes` are optional; `start` is UTC ISO-8601 (whole-second
+  `Z` form, e.g. `2026-07-20T18:00:00Z` — fractional seconds also parse).
+  Entries from 1 hour ago through 14 days ahead are shown.
+- **Stop & debrief.** Tag the session with the company and round type —
+  recruiter screen, behavioral, technical, system design, product sense, or
+  tech deep dive, or any custom type you've added (round types are just
+  markdown files; see below) — hit **Stop & Debrief**, and within a minute or
+  two you get a headline verdict (Strong No / Lean No / Lean Yes / Strong Yes —
+  the interviewer's would-I-advance call, elicited directly rather than
+  computed from the scores) plus per-dimension scores, weakness tags,
+  clickable transcript highlights, and concrete action items.
 - **Tailor the grading per interview.** Open a session and paste interview-specific
   criteria — a job's published rubric, a leveling guide, "focus on system-design
   trade-offs, this is a staff role" — into **Grading criteria for this interview**,
-  then hit **Regenerate**. The model weights your criteria above the built-in
+  then hit **Generate debrief** (or **Regenerate**, once a debrief already
+  exists). The model weights your criteria above the built-in
   rubric where they conflict, while still applying the base dimensions, weakness
   tags, and output format. It's scoped to that one recording and doesn't affect
-  any other session.
+  any other session. The same session view lets you rename the session or
+  change its round type inline — changing the round type re-runs the debrief
+  against the new rubric automatically.
 - **Track progress.** The **Pipeline** view groups sessions by company and round;
   the **Trends** view charts your recurring weakness tags and score dimensions
   over time, so "am I actually improving?" is answerable, not a vibe.
+  `overallScore` is a secondary trend line, comparable within a round type but
+  not across (different round types score different dimensions).
+- **Choose your coaching model.** Settings → Coaching model lets you pick
+  Claude Opus (best quality, default), Sonnet (balanced), or Haiku (fastest,
+  cheapest) — or switch the provider to a local/OpenAI-compatible server; see
+  [docs/local-llm.md](docs/local-llm.md).
+- **Export for Claude Cowork.** Settings → Cowork export writes one Markdown
+  file per session to a folder you choose, and keeps writing one on every new
+  debrief from then on.
+- **Keep old debriefs current.** Editing the prompts only affects *new*
+  debriefs. Settings → **Retry pending debriefs** catches up sessions that
+  never got a debrief (e.g. no API key was set yet); **Re-run debriefs on
+  current rubric** re-coaches *every* past session — including already-complete
+  ones — against whatever the prompts say today, which is the only way a
+  rubric change reaches existing debriefs.
 
-Two layers of prompt control: the **global** coaching prompts are plain markdown in
-`~/Library/Application Support/Debrief/prompts/` — edit `base.md` or any
-round-type overlay to retune every debrief without rebuilding — and the
-**per-interview** grading-criteria box above overrides them for a single session.
+Two layers of prompt control: the **global** coaching prompts are plain markdown,
+by default in `~/Library/Application Support/Debrief/prompts/` (configurable in
+Settings → Data locations, along with where recordings and the database live) —
+edit `base.md` or any round-type overlay to retune every debrief without
+rebuilding, or drop in a new `<name>.md` file to add a round type with no code
+change — and the **per-interview** grading-criteria box above overrides them
+for a single session.
 
 ## Privacy
 
-- **Audio never leaves your machine.** Transcription is fully on-device; raw
-  audio is deleted after a successful transcript by default (toggle in Settings).
-- **Only transcript text** is sent to the Claude API, and only for the coaching
-  step.
+- **Audio never leaves your machine.** Transcription runs fully on-device via
+  WhisperKit; raw audio is deleted after a successful transcript by default
+  (toggle in Settings). The one exception is a one-time setup step, not an
+  ongoing one: the first time you transcribe, WhisperKit fetches its speech
+  model from Hugging Face over the network. Once that model is cached, every
+  transcription — and your actual interview audio — stays fully offline.
+- **Only transcript text** is sent off-device, and only for the coaching step
+  — to the Claude API by default, or to whatever local/OpenAI-compatible
+  server you've pointed Settings at (which can itself be fully offline; see
+  [docs/local-llm.md](docs/local-llm.md)).
+- **Calendar pre-fill reads macOS Calendar locally.** If you turn it on, it's
+  an EventKit read of the calendar database already on your Mac — no network
+  call, no OAuth token, even for a Google account added in System Settings.
 - Recording is always an explicit click, never automatic.
 - You are responsible for complying with recording-consent laws in your
   jurisdiction — some places require all parties to consent.
@@ -133,7 +195,7 @@ Swift Package, no `.xcodeproj`. Five targets:
 | --------------- | ----------------------------------------------------- |
 | `CaptureKit`    | Call detection, mic + system-audio recorders, WAV chunking |
 | `Transcriber`   | WhisperKit wrapper and two-stream transcript merge    |
-| `CoachingEngine`| Prompt assembly, Claude API client, coaching service  |
+| `CoachingEngine`| Prompt assembly, LLM clients (Claude API and local/OpenAI-compatible), coaching service |
 | `Store`         | GRDB/SQLite schema, records, and trend/pipeline queries |
 | `DebriefApp`    | SwiftUI menu-bar app wiring it all together           |
 
