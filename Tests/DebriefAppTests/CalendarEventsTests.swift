@@ -144,6 +144,32 @@ final class CalendarEventsTests: XCTestCase {
         XCTAssertEqual(item?.roundType, "technical")
     }
 
+    /// Regression coverage for common invite punctuation that isn't an em dash: parens,
+    /// brackets, en dash, and pipe are all frequent in Google Calendar / Zoom invites and
+    /// must strip cleanly too, or the fragmentation this fix targets still happens.
+    func testMapStripsCompanyAcrossCommonSeparatorStyles() {
+        let cases: [(title: String, company: String)] = [
+            ("Stripe (System Design)", "Stripe"),
+            ("Stripe [Technical]", "Stripe"),
+            ("Stripe \u{2013} System Design", "Stripe"), // en dash
+            ("Stripe | Technical", "Stripe"),
+        ]
+        for testCase in cases {
+            let item = CalendarEvents.map(title: testCase.title, notes: nil,
+                                          start: now, knownRoundTypes: knownRoundTypes, now: now)
+            XCTAssertEqual(item?.company, testCase.company, "title: \(testCase.title)")
+        }
+    }
+
+    /// The round-type word sits inside the title rather than at an edge, so removing it
+    /// leaves a double space behind — that must collapse rather than leak into the
+    /// stored company name.
+    func testMapCollapsesWhitespaceLeftByMidTitleRoundType() {
+        let item = CalendarEvents.map(title: "Acme Technical Interview", notes: nil,
+                                      start: now, knownRoundTypes: knownRoundTypes, now: now)
+        XCTAssertEqual(item?.company, "Acme Interview")
+    }
+
     // MARK: - deterministic tie-break (Fix 3)
 
     func testMatchRoundTypeTieBreaksDeterministicallyRegardlessOfKnownOrder() {

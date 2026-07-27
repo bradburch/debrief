@@ -150,13 +150,15 @@ final class CalendarEvents {
     /// title, so "Stripe — System Design" pre-fills company "Stripe" instead of a
     /// distinct row per round in the Pipeline/Trends company grouping.
     ///
-    /// ponytail: strips one occurrence of the matched raw or display form, then trims a
-    /// fixed separator set (`—`, `-`, `/`, `:`) plus whitespace off both edges. It does
-    /// not parse compound titles beyond that (e.g. "Stripe / Brad — Onsite 2" is left
-    /// alone when no round type matches, and a matched round type in the middle of a
-    /// longer phrase only removes that word, not surrounding filler). If stripping would
-    /// leave nothing, the original title is kept — never an empty company. Upgrade path:
-    /// a real per-calendar/company title template if this stops being good enough.
+    /// ponytail: strips one occurrence of the matched raw or display form, collapses the
+    /// whitespace that leaves behind, then trims a fixed separator set (dashes, slash,
+    /// colon, pipe, brackets) plus whitespace off both edges. It does not parse compound
+    /// titles beyond that (e.g. "Stripe / Brad — Onsite 2" is left alone when no round
+    /// type matches, and a matched round type in the middle of a longer phrase only
+    /// removes that word, not surrounding filler like "with" or "Interview"). If
+    /// stripping would leave nothing, the original title is kept — never an empty
+    /// company. Upgrade path: a real per-calendar/company title template if this stops
+    /// being good enough.
     private static func strippedCompany(from title: String, roundType: String) -> String {
         var working = title
         for needle in [roundType, RoundType(rawValue: roundType).displayName] {
@@ -165,7 +167,8 @@ final class CalendarEvents {
                 break
             }
         }
-        let stripSet = CharacterSet(charactersIn: "—-/:").union(.whitespacesAndNewlines)
+        working = working.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let stripSet = CharacterSet(charactersIn: "—–-/:|()[]").union(.whitespacesAndNewlines)
         let stripped = working.trimmingCharacters(in: stripSet)
         return stripped.isEmpty ? title : stripped
     }
