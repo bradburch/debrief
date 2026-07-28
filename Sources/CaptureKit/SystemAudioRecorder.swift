@@ -17,6 +17,14 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, SCStreamOutput
     private var stream: SCStream?
     private let queue = DispatchQueue(label: "debrief.sys-writer")
     private static let logger = Logger(subsystem: "com.debrief.app", category: "capture")
+    /// Throttled diagnostic for the Continuity/cellular-call audio gap (see manual-test-
+    /// checklist #16): logs whether SCK is delivering audio buffers at all, and at what
+    /// level, roughly every 3s. Only touched from `queue`, so no lock needed. Distinguishes
+    /// "SCK never calls back during the call" (platform excludes it from the capture mix —
+    /// nothing app-side can fix) from "buffers arrive but are silent" (a different, possibly
+    /// fixable bug). ponytail: fixed 3s cadence, not configurable — this is a one-off
+    /// diagnostic to delete once the root cause is confirmed, not a permanent feature.
+    private var lastDiagnosticLogTime: CFAbsoluteTime = 0
 
     public init(writer: WavChunkWriter) { self.writer = writer }
 
@@ -55,7 +63,13 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, SCStreamOutput
 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, let pcm = sampleBuffer.toPCMBuffer() else { return }
-        onLevel?(LevelMeter.rms(pcm))
+        let rms = LevelMeter.rms(pcm)
+        onLevel?(rms)
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastDiagnosticLogTime > 3 {
+            lastDiagnosticLogTime = now
+            Self.logger.debug("SystemAudioRecorder: buffer delivered, rms=\(rms, privacy: .public)")
+        }
         do {
             try writer.append(pcm)
         } catch {

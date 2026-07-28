@@ -56,3 +56,22 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
     network activity involved — this is a local read of macOS Calendar. Denying the
     prompt (or Privacy & Security > Calendars later) leaves the section showing
     "Denied" and Debrief keeps using `upcoming.json`.
+16. **Continuity/cellular calls**: confirmed symptom — the call IS detected/recorded, but
+    the "Them" bar never moves during a Continuity cellular call (an iPhone call answered
+    on the Mac), unlike Zoom/Meet/FaceTime/browser calls. Root cause not yet confirmed:
+    either SCK never delivers audio buffers for that call (a platform-level exclusion of
+    Call Relay audio from the capture mix — not fixable from `SystemAudioRecorder`), or
+    buffers arrive but are silent (a different, possibly fixable bug). `SystemAudioRecorder`
+    now logs `"buffer delivered, rms=..."` at `.debug` roughly every 3s while any system
+    audio is captured. To test: open Console.app, filter subsystem `com.debrief.app`
+    category `capture`, then record a FaceTime Audio call first (control — confirm the log
+    line appears with a nonzero rms while talking, and the "Them" bar moves), then
+    back-to-back record a Continuity cellular call and watch both the log and the "Them"
+    bar. Three possible outcomes:
+    - No log line at all during the Continuity call → SCK isn't delivering buffers →
+      platform-level exclusion, confirmed. Nothing to fix in Debrief.
+    - Log line appears but `rms` stays ~0 → buffers arrive silent → a different bug, keep
+      investigating (sample format? per-app mute?).
+    - Log line appears with nonzero `rms` but the "Them" bar still doesn't move → the bug
+      is in the UI level-forwarding path (`onLevel`), not capture — file separately.
+    Note which outcome occurred here once confirmed.
