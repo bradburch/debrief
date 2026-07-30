@@ -49,11 +49,16 @@ public enum DetectionProbes {
     /// Processes whose "running input" must not count as a call. Two kinds:
     ///  - Always-on system listeners (Siri's wake-word daemon) that report running input
     ///    whenever ANY process opens the mic.
-    ///  - com.apple.replayd: the ScreenCaptureKit/ReplayKit daemon that OUR OWN
-    ///    SystemAudioRecorder runs through. It shows as a separate PID (so the getpid()
-    ///    self-exclusion misses it) and holds input for the entire recording — counting it
-    ///    pins mic-in-use to true the whole time, so callLikelyEnded never fires and
-    ///    auto-stop is impossible. Confirmed: replayd holds input exactly across .recording.
+    ///  - com.apple.replayd: the ScreenCaptureKit/ReplayKit daemon. This entry existed
+    ///    because SystemAudioRecorder used to capture via SCK and therefore ran through
+    ///    replayd, which shows as a separate PID (so the getpid() self-exclusion misses
+    ///    it) and holds input for the entire recording — that pinned mic-in-use to true
+    ///    the whole time, so callLikelyEnded never fired and auto-stop was impossible.
+    ///    SystemAudioRecorder now uses an in-process CoreAudio tap, which the getpid()
+    ///    self-exclusion already covers, so replayd is no longer ours. Retained anyway:
+    ///    dropping it would change auto-stop behaviour for anyone screen-recording
+    ///    alongside a call, and that isn't verifiable from the unit suite. Harmless to
+    ///    keep — the miss is fail-safe (recording just continues until manual stop).
     /// Counting any of these makes the mic look busy for our entire recording.
     /// ponytail: denylist, extend if auto-stop is inert on a machine with another such
     /// daemon; the miss is fail-safe (recording just keeps going until manual stop).

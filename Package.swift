@@ -3,7 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "Debrief",
-    platforms: [.macOS(.v14)],
+    // 14.2 is the floor for CoreAudio process taps (AudioHardwareCreateProcessTap),
+    // which SystemAudioRecorder needs to hear Continuity/cellular call audio at all.
+    platforms: [.macOS("14.2")],
     products: [
         .executable(name: "DebriefApp", targets: ["DebriefApp"]),
     ],
