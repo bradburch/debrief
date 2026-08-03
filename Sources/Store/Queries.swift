@@ -145,19 +145,44 @@ extension AppDatabase {
         }
     }
 
+    /// Terminal, unlike `failed`: the round type is transcript-only, so there is nothing
+    /// to retry. Both coaching sweeps below exclude it for that reason.
+    public func markCoachingSkipped(sessionId: Int64) throws {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE session SET coachingStatus = 'skipped' WHERE id = ?", arguments: [sessionId])
+        }
+    }
+
     public func sessionsNeedingCoaching() throws -> [InterviewSession] {
         try dbWriter.read { db in
             try InterviewSession
                 .filter(Column("coachingStatus") != "complete")
+                .filter(Column("coachingStatus") != "skipped")
                 .filter(sql: "id IN (SELECT DISTINCT sessionId FROM transcriptSegment)")
                 .order(Column("date"))
                 .fetchAll(db)
         }
     }
 
+    /// How many stored sessions use a round type. Deleting a type whose prompt file is
+    /// gone would leave those sessions pointing at a round type that can no longer be
+    /// assembled, so the Settings UI blocks the delete instead.
+    public func sessionCount(forRoundType type: RoundType) throws -> Int {
+        try dbWriter.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM session WHERE roundType = ?",
+                             arguments: [type.rawValue]) ?? 0
+        }
+    }
+
     /// Every session with a transcript, including ones already coached — the re-coach path.
     /// A rubric change only reaches existing debriefs by re-running them, since feedback is
     /// written once at finalize.
+    ///
+    /// Deliberately includes `skipped` (transcript-only) sessions. This query means exactly
+    /// "has a transcript", and `exportAll` uses it as well as the re-coach sweep — a mock
+    /// interview's transcript is the entire artifact it produces, so excluding it here to
+    /// stop re-coaching would silently drop practice sessions from Cowork export too.
+    /// `recoachAll` filters `skipped` itself instead.
     public func sessionsWithTranscript() throws -> [InterviewSession] {
         try dbWriter.read { db in
             try InterviewSession

@@ -139,14 +139,25 @@ final class PromptStoreTests: XCTestCase {
         XCTAssertEqual(dims.count, Set(dims).count, "duplicate keys would break the JSON schema")
     }
 
-    func testEveryBuiltinRoundDeclaresRoundSpecificDimensions() throws {
+    /// Every *scored* builtin must contribute dimensions of its own, or it is just the
+    /// base rubric wearing a different name. Transcript-only rounds are exempt by
+    /// definition: they are never scored, so declaring dimensions would be dead weight.
+    func testEveryScoredBuiltinRoundDeclaresRoundSpecificDimensions() throws {
         try store.ensureDefaults()
         let base = try store.dimensions(for: RoundType(rawValue: "base_only_nonexistent_overlay"))
-        for round in RoundType.builtins {
+        for round in RoundType.builtins where !store.isTranscriptOnly(round) {
             let dims = try store.dimensions(for: round)
             XCTAssertFalse(Set(dims).subtracting(base).isEmpty,
                            "\(round.rawValue) scores only delivery dimensions — its overlay declares none")
         }
+    }
+
+    /// The exemption above must stay narrow: exactly the rounds that opt out by declaring
+    /// themselves transcript-only, so a scored round can never silently slip the check by
+    /// losing its dimensions section.
+    func testOnlyMockInterviewIsExemptFromDeclaringDimensions() throws {
+        try store.ensureDefaults()
+        XCTAssertEqual(RoundType.builtins.filter { store.isTranscriptOnly($0) }, [.mockInterview])
     }
 
     func testMissingOverlayFallsBackToBaseDimensions() throws {
@@ -201,7 +212,8 @@ final class PromptStoreTests: XCTestCase {
         try "custom".write(to: dir.appendingPathComponent("bar_raiser.md"), atomically: true, encoding: .utf8)
         try "not a prompt".write(to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
         XCTAssertEqual(store.availableRoundTypes(), [
-            .recruiterScreen, .behavioral, .technical, .systemDesign, .productSense, .techDeepDive,  // builtins, fixed order
+            .recruiterScreen, .behavioral, .technical, .systemDesign, .productSense, .techDeepDive,
+            .mockInterview,  // builtins, fixed order
             RoundType(rawValue: "bar_raiser"), RoundType(rawValue: "take_home_review"),  // customs, alphabetical
         ])  // base.md excluded, non-.md files excluded
     }

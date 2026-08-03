@@ -16,6 +16,15 @@ public struct CoachingService: Sendable {
             guard let detail = try db.sessionDetail(id: sessionId) else {
                 throw ClaudeError.emptyResponse
             }
+            // Transcript-only round types stop here: recorded and transcribed, never scored.
+            // The guard lives in coach() rather than at the call sites because all three
+            // paths — finalize, retryAllPending, and recoachAll — funnel through here, so
+            // one check keeps a practice round from ever billing an LLM call. `skipped` is
+            // terminal, so the retry sweeps stop offering it too.
+            if prompts.isTranscriptOnly(detail.session.roundType) {
+                try db.markCoachingSkipped(sessionId: sessionId)
+                return
+            }
             let history = try db.recentWeaknessTags(limitSessions: historyWindow)
             let system = try prompts.assembleSystemPrompt(roundType: detail.session.roundType,
                                                           historyTags: history,
@@ -86,7 +95,13 @@ public struct CoachingService: Sendable {
     /// Honors cancellation between sessions: sessions already re-coached keep their new
     /// feedback, and the rest stay on the old rubric until re-run.
     public func recoachAll(onProgress: @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async -> [Int64: Error] {
-        await coachEach((try? db.sessionsWithTranscript()) ?? [], onProgress: onProgress)
+        // Filtered here rather than in the query: `sessionsWithTranscript` is shared with
+        // exportAll, which must keep transcript-only sessions. Re-coaching them would bill
+        // an LLM call per practice session to produce nothing — coach() would skip them
+        // anyway, but they'd still inflate the progress total the user watches.
+        let sessions = ((try? db.sessionsWithTranscript()) ?? [])
+            .filter { $0.coachingStatus != .skipped }
+        return await coachEach(sessions, onProgress: onProgress)
     }
 
     private func coachEach(_ sessions: [InterviewSession],

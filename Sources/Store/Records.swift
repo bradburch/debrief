@@ -15,7 +15,11 @@ public struct RoundType: RawRepresentable, Codable, Hashable, Sendable {
     public static let systemDesign = RoundType(rawValue: "system_design")
     public static let productSense = RoundType(rawValue: "product_sense")
     public static let techDeepDive = RoundType(rawValue: "tech_deep_dive")
-    public static let builtins: [RoundType] = [.recruiterScreen, .behavioral, .technical, .systemDesign, .productSense, .techDeepDive]
+    /// Practice run: recorded and transcribed, never scored. Transcript-only is a
+    /// property of the prompt file (`transcript-only: true`), not of this constant —
+    /// any round type can declare it. See `PromptStore.isTranscriptOnly(_:)`.
+    public static let mockInterview = RoundType(rawValue: "mock_interview")
+    public static let builtins: [RoundType] = [.recruiterScreen, .behavioral, .technical, .systemDesign, .productSense, .techDeepDive, .mockInterview]
 
     /// "take_home_review" → "Take Home Review". Matches the old hardcoded
     /// names for every builtin, so no special-casing.
@@ -36,7 +40,11 @@ public struct RoundType: RawRepresentable, Codable, Hashable, Sendable {
 
 public enum Speaker: String, Codable, Sendable { case you = "YOU", them = "THEM" }
 
-public enum CoachingStatus: String, Codable, Sendable { case pending, complete, failed }
+/// `skipped` is a terminal state, not a failure: the round type declares itself
+/// transcript-only, so there is no debrief to produce. It exists because `pending` and
+/// `failed` both mean "try again" — a transcript-only session left `pending` would be
+/// picked up by every "Retry pending debriefs" run forever and read as unfinished.
+public enum CoachingStatus: String, Codable, Sendable { case pending, complete, failed, skipped }
 
 /// The interviewer's would-I-advance call — the headline signal of a debrief.
 ///
