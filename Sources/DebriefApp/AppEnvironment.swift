@@ -241,6 +241,17 @@ final class AppEnvironment: ObservableObject {
 
     nonisolated static func resolveLLM() -> CoachingLLM {
         let d = UserDefaults.standard
+        // Subscription-backed path: shells out to the Claude Code CLI instead of billing an
+        // API key. Falls back to the Anthropic client when the binary isn't found, so a
+        // missing or moved CLI degrades to "needs an API key" rather than failing every
+        // debrief with a spawn error.
+        if d.string(forKey: "coachingProvider") == "claude_cli",
+           let cli = ClaudeCodeCLIClient.locate(extraPath: d.string(forKey: "claudeCLIPath")) {
+            return ClaudeCodeCLIClient(executable: cli,
+                                       model: d.string(forKey: "claudeCLIModel").flatMap {
+                                           $0.isEmpty ? nil : $0
+                                       } ?? "claude-opus-5")
+        }
         guard d.string(forKey: "coachingProvider") == "openai_compat" else {
             return AnthropicClient(apiKey: resolveAPIKey(), model: resolveModel())
         }
