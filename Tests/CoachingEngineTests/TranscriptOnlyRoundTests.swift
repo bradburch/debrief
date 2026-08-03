@@ -115,9 +115,29 @@ final class TranscriptOnlyRoundTests: XCTestCase {
         XCTAssertFalse(needing.contains(mockID), "skipped session queued for retry")
         XCTAssertTrue(needing.contains(realID), "a genuinely pending session was dropped")
 
-        let recoachable = try db.sessionsWithTranscript().map(\.id)
-        XCTAssertFalse(recoachable.contains(mockID), "skipped session queued for re-coach")
-        XCTAssertTrue(recoachable.contains(realID))
+        // sessionsWithTranscript still returns it — that query means "has a transcript" and
+        // is shared with export. recoachAll does its own filtering; see the export test below.
+        let withTranscript = try db.sessionsWithTranscript().map(\.id)
+        XCTAssertTrue(withTranscript.contains(mockID))
+        XCTAssertTrue(withTranscript.contains(realID))
+    }
+
+    /// A mock interview's transcript is the entire artifact it produces, so it must still
+    /// export. Filtering `skipped` inside `sessionsWithTranscript` to stop re-coaching also
+    /// silently dropped these from Cowork export — the two callers want different things.
+    func testTranscriptOnlySessionsStillExport() async throws {
+        let mockID = try seedSession(roundType: .mockInterview)
+        try await CoachingService(db: db, prompts: prompts, llm: NeverCalledLLM()).coach(sessionId: mockID)
+        XCTAssertEqual(try db.sessionDetail(id: mockID)?.session.coachingStatus, .skipped)
+
+        let exportDir = dir.appendingPathComponent("export")
+        let errors = CoachingService(db: db, prompts: prompts, llm: NeverCalledLLM())
+            .exportAll(to: exportDir)
+        XCTAssertTrue(errors.isEmpty, "export reported errors: \(errors)")
+
+        let written = try FileManager.default.contentsOfDirectory(atPath: exportDir.path)
+            .filter { $0.hasSuffix(".md") }
+        XCTAssertFalse(written.isEmpty, "transcript-only session was dropped from export")
     }
 
     /// Retrying is what a user does after a failure; it must stay harmless for a mock.

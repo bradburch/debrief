@@ -95,7 +95,13 @@ public struct CoachingService: Sendable {
     /// Honors cancellation between sessions: sessions already re-coached keep their new
     /// feedback, and the rest stay on the old rubric until re-run.
     public func recoachAll(onProgress: @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async -> [Int64: Error] {
-        await coachEach((try? db.sessionsWithTranscript()) ?? [], onProgress: onProgress)
+        // Filtered here rather than in the query: `sessionsWithTranscript` is shared with
+        // exportAll, which must keep transcript-only sessions. Re-coaching them would bill
+        // an LLM call per practice session to produce nothing — coach() would skip them
+        // anyway, but they'd still inflate the progress total the user watches.
+        let sessions = ((try? db.sessionsWithTranscript()) ?? [])
+            .filter { $0.coachingStatus != .skipped }
+        return await coachEach(sessions, onProgress: onProgress)
     }
 
     private func coachEach(_ sessions: [InterviewSession],

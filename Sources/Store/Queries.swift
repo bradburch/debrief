@@ -178,12 +178,14 @@ extension AppDatabase {
     /// A rubric change only reaches existing debriefs by re-running them, since feedback is
     /// written once at finalize.
     ///
-    /// Excludes `skipped`: those are transcript-only rounds, and re-coaching them would
-    /// bill an LLM call per practice session to produce nothing.
+    /// Deliberately includes `skipped` (transcript-only) sessions. This query means exactly
+    /// "has a transcript", and `exportAll` uses it as well as the re-coach sweep — a mock
+    /// interview's transcript is the entire artifact it produces, so excluding it here to
+    /// stop re-coaching would silently drop practice sessions from Cowork export too.
+    /// `recoachAll` filters `skipped` itself instead.
     public func sessionsWithTranscript() throws -> [InterviewSession] {
         try dbWriter.read { db in
             try InterviewSession
-                .filter(Column("coachingStatus") != "skipped")
                 .filter(sql: "id IN (SELECT DISTINCT sessionId FROM transcriptSegment)")
                 .order(Column("date"))
                 .fetchAll(db)
