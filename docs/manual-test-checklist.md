@@ -99,3 +99,18 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
     recording and had to be denylisted in `DetectionProbes` or `callLikelyEnded` never
     fired. The tap runs in-process, so `getpid()` self-exclusion covers it — confirm a
     call still auto-stops after it ends rather than recording indefinitely.
+17. **Claude subscription provider**: Settings > Coaching model > "Claude subscription
+    (Claude Code CLI)". The pane should confirm the resolved binary path in green; if it
+    shows the orange not-found warning, set the path explicitly. Then record a short
+    session and confirm a debrief appears with scores on the round's real dimensions.
+    Specific things to check, because the CLI path has no JSON schema behind it:
+    - **Scores use the round type's dimensions**, not invented keys. Wrong keys mean the
+      prose contract failed and the session should have been left `failed`, not stored.
+    - **Launch the app from Finder, not a terminal**, at least once. A Finder-launched app
+      inherits a minimal PATH, so a CLI found via a shell may be invisible to the bundle —
+      that is exactly the failure `ClaudeCodeCLIClient.defaultSearchPaths()` guards.
+    - **"Re-run debriefs on current rubric" across several sessions** — subscription rate
+      limits are session-windowed, so watch for throttling that the metered API wouldn't hit.
+      Failures here should leave sessions retryable, never block finalize.
+    - Sign out of the CLI (`claude` logout) and confirm a debrief fails cleanly and stays
+      retryable rather than hanging.

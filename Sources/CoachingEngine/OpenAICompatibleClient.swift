@@ -101,14 +101,24 @@ public struct OpenAICompatibleClient: CoachingLLM {
         guard let content = envelope.choices.first?.message.content else {
             throw ClaudeError.emptyResponse
         }
+        return try Self.decodeCoaching(from: content, dimensions: dimensions)
+    }
+
+    /// Pulls a valid `CoachingResult` out of free-form model text.
+    ///
+    /// Shared by every client that can't enforce a JSON schema — this one and
+    /// `ClaudeCodeCLIClient`. Both pair it with `formatAppendix(dimensions:)`, and the two
+    /// halves are one contract: the appendix states the rules, this enforces them. Changing
+    /// either without the other lets a malformed response through.
+    static func decodeCoaching(from content: String, dimensions: [String]) throws -> CoachingResult {
         let decoder = JSONDecoder()
         // A weak local model may echo the format appendix's example object
         // (verbatim, or ahead of its real answer) rather than follow it, so
         // skip any decodable candidate whose prose is still the example's
         // sentinel text and keep scanning for the model's actual answer.
-        for candidate in Self.candidateObjects(in: content) {
+        for candidate in candidateObjects(in: content) {
             if let result = try? decoder.decode(CoachingResult.self, from: candidate),
-               result.proseDebrief != Self.exampleProse,
+               result.proseDebrief != exampleProse,
                // scores is [String: Int], so decoding also succeeds for a model that
                // ignored the key list and returned its own dimensions. Unlike the schema-
                // enforced Anthropic path, nothing else here catches that — and it would

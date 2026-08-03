@@ -15,6 +15,8 @@ struct SettingsView: View {
     @AppStorage("coachingProvider") private var provider = "anthropic"
     @AppStorage("openAICompatBaseURL") private var compatBaseURL = "http://localhost:11434/v1"
     @AppStorage("openAICompatModel") private var compatModel = ""
+    @AppStorage("claudeCLIPath") private var claudeCLIPath = ""
+    @AppStorage("claudeCLIModel") private var claudeCLIModel = "claude-opus-5"
     @State private var compatKey = SecretStore.read(key: "openai-compat-api-key") ?? ""
     @AppStorage("exportDirectory") private var exportDir = ""
     @State private var relaunchPrompt: RelaunchPrompt?
@@ -53,11 +55,14 @@ struct SettingsView: View {
             Section("Coaching model") {
                 Picker("Provider", selection: $provider) {
                     Text("Claude API (recommended)").tag("anthropic")
+                    Text("Claude subscription (Claude Code CLI)").tag("claude_cli")
                     Text("Local / OpenAI-compatible").tag("openai_compat")
                 }
                 .onChange(of: provider) { env.rebuildCoaching() }
 
-                if provider == "anthropic" {
+                if provider == "claude_cli" {
+                    claudeCLISettings
+                } else if provider == "anthropic" {
                     if apiKey.isEmpty && !envAPIKeyPresent {
                         Label("No API key configured — debriefs will not run.", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
@@ -311,6 +316,32 @@ struct SettingsView: View {
     /// Recomputes the calendar list and the selected calendar's upcoming count. Cheap
     /// enough to call on appear, on every refresh, and after a grant/selection change —
     /// EventKit's own store is already long-lived (`CalendarEvents.shared`).
+    /// Settings for the subscription-backed path. The honest tradeoffs are stated inline
+    /// rather than buried in docs: this route is measurably more expensive per debrief in
+    /// tokens and is not a supported integration, so the person choosing it should see that
+    /// at the moment they choose it.
+    @ViewBuilder
+    private var claudeCLISettings: some View {
+        let located = ClaudeCodeCLIClient.locate(extraPath: claudeCLIPath)
+        if let located {
+            Label("Using \(located.path)", systemImage: "checkmark.circle")
+                .font(.caption).foregroundStyle(.green)
+        } else {
+            Label("Claude Code CLI not found — debriefs fall back to the Claude API (needs a key).",
+                  systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        }
+        TextField("CLI path (optional)", text: $claudeCLIPath,
+                  prompt: Text("~/.local/bin/claude"))
+            .onChange(of: claudeCLIPath) { env.rebuildCoaching() }
+        TextField("Model", text: $claudeCLIModel, prompt: Text("claude-opus-5"))
+            .onChange(of: claudeCLIModel) { env.rebuildCoaching() }
+        Text("Runs debriefs through the Claude Code CLI, billed against your Claude subscription instead of an API key. Requires the CLI installed and signed in.")
+            .font(.caption).foregroundStyle(.secondary)
+        Text("Tradeoffs: each debrief carries roughly 15–20k extra tokens of the CLI's own prompt, subscription rate limits can throttle \"Re-run debriefs on current rubric\", and there's no JSON schema — the response contract is enforced by prompt and a key check, as with local models. Claude Code is a coding tool, so this path isn't a supported integration and a CLI update could break it.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
     private func refreshCalendarSection() {
         refreshCalendarStatus()
         calendarAuthStatus = CalendarEvents.authorizationStatus
