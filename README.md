@@ -47,9 +47,9 @@ launch.
 
 ## Requirements
 
-- macOS 14 or later (Apple Silicon recommended — transcription uses CoreML/Metal)
+- macOS 14.2 or later (Apple Silicon recommended — transcription uses CoreML/Metal)
 - Full Xcode installed (the build needs XCTest, which the Command Line Tools alone don't ship)
-- A Claude API key for the coaching step (transcription is free and local) — or run coaching fully offline against a local model; see [docs/local-llm.md](docs/local-llm.md)
+- Something to generate the coaching debrief — transcription is always free and local. Pick one: a **Claude API key** (recommended), a **Claude subscription** via the Claude Code CLI, or a **local model** for fully offline coaching; see [docs/local-llm.md](docs/local-llm.md)
 
 ## Build & run
 
@@ -149,8 +149,15 @@ to *Debrief* instead of your terminal.
   not across (different round types score different dimensions).
 - **Choose your coaching model.** Settings → Coaching model lets you pick
   Claude Opus (best quality, default), Sonnet (balanced), or Haiku (fastest,
-  cheapest) — or switch the provider to a local/OpenAI-compatible server; see
-  [docs/local-llm.md](docs/local-llm.md).
+  cheapest) — or switch provider entirely: your **Claude subscription** via the
+  Claude Code CLI (no API key; costs more tokens per debrief and can hit
+  subscription rate limits), or a **local/OpenAI-compatible server** for fully
+  offline coaching; see [docs/local-llm.md](docs/local-llm.md).
+- **Practice rounds don't get scored.** Tag a session **Mock Interview** and
+  Debrief records and transcribes it but never sends it to an LLM — a friend
+  improvising isn't a calibrated interviewer, and scoring it would put noise in
+  the same trend lines your real rounds feed. Settings → Interview types lets you
+  add your own round types and mark any of them transcript-only.
 - **Export for Claude Cowork.** Settings → Cowork export writes one Markdown
   file per session to a folder you choose, and keeps writing one on every new
   debrief from then on.
@@ -196,7 +203,7 @@ Swift Package, no `.xcodeproj`. Five targets:
 | --------------- | ----------------------------------------------------- |
 | `CaptureKit`    | Call detection, mic + system-audio recorders, WAV chunking |
 | `Transcriber`   | WhisperKit wrapper and two-stream transcript merge    |
-| `CoachingEngine`| Prompt assembly, LLM clients (Claude API and local/OpenAI-compatible), coaching service |
+| `CoachingEngine`| Prompt assembly, LLM clients (Claude API, Claude Code CLI, local/OpenAI-compatible), coaching service |
 | `Store`         | GRDB/SQLite schema, records, and trend/pipeline queries |
 | `DebriefApp`    | SwiftUI menu-bar app wiring it all together           |
 
