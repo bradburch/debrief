@@ -5,6 +5,8 @@ public enum PromptError: Error, Equatable {
     /// base.md declares no `## Scored dimensions`, so there is nothing to score. Reachable if
     /// the user edits the section out of base.md; `ensureDefaults` repairs the upgrade case.
     case noScoredDimensions(round: String)
+    /// base.md is the shared prompt every overlay builds on, not a selectable round type.
+    case cannotDeleteBase
 }
 
 public struct PromptStore: Sendable {
@@ -25,7 +27,13 @@ public struct PromptStore: Sendable {
         ("system_design.md", DefaultPrompts.systemDesign),
         ("product_sense.md", DefaultPrompts.productSense),
         ("tech_deep_dive.md", DefaultPrompts.techDeepDive),
+        ("mock_interview.md", DefaultPrompts.mockInterview),
     ]
+
+    /// Marker that makes a round type transcript-only: recorded and transcribed, never
+    /// sent to an LLM. Read from the overlay's leading metadata block so a round type is
+    /// still purely data — adding one never needs a Swift change.
+    static let transcriptOnlyKey = "transcript-only:"
 
     /// Heading that marks a prompt as speaking the current contract. Its absence in a builtin
     /// we ship is the upgrade signal — see `ensureDefaults`.
@@ -73,6 +81,94 @@ public struct PromptStore: Sendable {
             .filter { $0.rawValue != "base" }
         let customs = types.filter { !RoundType.builtins.contains($0) }.sorted { $0.rawValue < $1.rawValue }
         return RoundType.builtins.filter(types.contains) + customs
+    }
+
+    // MARK: - Transcript-only round types
+
+    public func isTranscriptOnly(_ type: RoundType) -> Bool {
+        let url = directory.appendingPathComponent("\(type.rawValue).md")
+        guard let markdown = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        return Self.parseTranscriptOnly(markdown)
+    }
+
+    /// True when the overlay's leading metadata block declares `transcript-only: true`.
+    ///
+    /// Only the lines before the first Markdown heading are considered, so prose that
+    /// merely discusses being transcript-only can never accidentally disable scoring for
+    /// a round type — the marker has to be metadata, not a sentence.
+    static func parseTranscriptOnly(_ markdown: String) -> Bool {
+        for line in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") { return false }  // metadata block is over
+            guard trimmed.lowercased().hasPrefix(transcriptOnlyKey) else { continue }
+            let value = trimmed.dropFirst(transcriptOnlyKey.count).trimmingCharacters(in: .whitespaces)
+            return value.lowercased() == "true"
+        }
+        return false
+    }
+
+    /// Returns `markdown` with the transcript-only marker set to `on`.
+    ///
+    /// The editor shows the marker both as a checkbox and as raw text in the prompt body,
+    /// so one of them has to win on save or they drift apart. The checkbox does: any
+    /// existing marker in the leading metadata block is dropped first, then re-added when
+    /// `on`. Idempotent, so saving repeatedly never stacks up duplicate lines.
+    public static func settingTranscriptOnly(_ on: Bool, in markdown: String) -> String {
+        var lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var index = 0
+        while index < lines.count {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") { break }  // past the metadata block
+            if trimmed.lowercased().hasPrefix(transcriptOnlyKey) {
+                lines.remove(at: index)
+                continue
+            }
+            index += 1
+        }
+        // Drop blank lines the removal may have left at the top.
+        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.removeFirst()
+        }
+        let body = lines.joined(separator: "\n")
+        return on ? "transcript-only: true\n\n" + body : body
+    }
+
+    // MARK: - Editing round types
+
+    /// Raw markdown for a round type, or "" when it has no overlay file yet.
+    public func markdown(for type: RoundType) -> String {
+        let url = directory.appendingPathComponent("\(type.rawValue).md")
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    public func write(_ markdown: String, for type: RoundType) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try markdown.write(to: directory.appendingPathComponent("\(type.rawValue).md"),
+                           atomically: true, encoding: .utf8)
+    }
+
+    /// Deletes a round type's overlay, which is what removes it from the picker.
+    /// Refuses `base`, which is the shared prompt every round type builds on rather than
+    /// a selectable type — deleting it would break every debrief.
+    public func delete(_ type: RoundType) throws {
+        guard type.rawValue != "base" else {
+            throw PromptError.cannotDeleteBase
+        }
+        let url = directory.appendingPathComponent("\(type.rawValue).md")
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Normalizes a user-typed name ("Take Home Review") into a round-type raw value
+    /// ("take_home_review"), which is both the filename stem and the stored value.
+    /// Returns nil when nothing usable is left, so the UI can reject the input.
+    public static func normalizedRawValue(from name: String) -> String? {
+        let allowed = name.lowercased().map { ch -> Character in
+            ch.isLetter || ch.isNumber ? ch : " "
+        }
+        let slug = String(allowed).split(separator: " ").joined(separator: "_")
+        return slug.isEmpty ? nil : slug
     }
 
     /// Parses `- key: description` bullets out of a `## Scored dimensions` section.

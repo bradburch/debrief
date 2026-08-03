@@ -163,6 +163,7 @@ struct SettingsView: View {
                     NSWorkspace.shared.open(PromptStore.defaultDirectory())
                 }
             }
+            InterviewTypesSection()
             Section("Cowork export") {
                 Text(exportDir.isEmpty
                      ? "Off — choose a folder to write each debrief as a markdown file Claude Cowork can read."

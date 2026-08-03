@@ -332,4 +332,27 @@ enum DefaultPrompts {
     Additional weakness tags allowed: weak_narrative, unclear_ownership, shallow_technical_depth,
     unjustified_decisions, defensive_in_qa, no_failures_discussed
     """
+
+    /// Transcript-only: recorded and transcribed, never sent to an LLM.
+    ///
+    /// The `transcript-only: true` marker is what does the work, and it is not special to
+    /// this file — any overlay can declare it, including one the user writes. The prose
+    /// below is only here so the file reads sensibly if opened; nothing parses it.
+    static let mockInterview = """
+    transcript-only: true
+
+    # Overlay: mock interview (practice run)
+
+    A practice interview. Debrief records it, transcribes both sides, and stops there — no
+    scores, no debrief, no LLM call, and nothing that would move your trend lines.
+
+    Why no scoring: a mock is usually a friend or a peer improvising, not a calibrated
+    interviewer running a real loop. Scoring it would put noise into the same trend lines
+    that real rounds feed, and comparing a favour from a colleague against an onsite makes
+    both numbers mean less. The transcript is the useful artifact — read it back, search it,
+    export it.
+
+    To score a practice round anyway, remove the `transcript-only: true` line above and add a
+    `## Scored dimensions` section, or start from a copy of a real round type instead.
+    """
 }
