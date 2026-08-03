@@ -88,7 +88,9 @@ public struct ClaudeCodeCLIClient: CoachingLLM {
     /// stdout is drained continuously rather than read after exit: a debrief response can
     /// exceed the 64KB pipe buffer, and a full buffer with no reader deadlocks — the child
     /// blocks writing, the parent blocks waiting for a child that will never exit.
-    private func run(arguments: [String], stdin: String) async throws -> Data {
+    /// Internal rather than private so tests can drive it with a stand-in binary (`/bin/cat`)
+    /// and push more than a pipe's worth of data through it without needing the CLI.
+    func run(arguments: [String], stdin: String) async throws -> Data {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -119,7 +121,10 @@ public struct ClaudeCodeCLIClient: CoachingLLM {
             }
 
             process.terminationHandler = { proc in
-                // Drain whatever is still buffered after the handler stops firing.
+                // Stop the streaming reader BEFORE draining. Leaving it installed means two
+                // readers on the same descriptor at once — readToEnd and the handler
+                // interleave, and chunks are lost or double-counted.
+                outPipe.fileHandleForReading.readabilityHandler = nil
                 let rest = (try? outPipe.fileHandleForReading.readToEnd()) ?? nil
                 if let rest, !rest.isEmpty { collector.append(rest) }
                 guard proc.terminationStatus == 0 else {
@@ -137,9 +142,9 @@ public struct ClaudeCodeCLIClient: CoachingLLM {
                 return
             }
 
-            inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-            try? inPipe.fileHandleForWriting.close()
-
+            // Armed BEFORE the stdin write, not after: the write below can block, and a
+            // timeout scheduled afterwards would never be armed to rescue it.
+            //
             // Without this a wedged CLI would hang finalize indefinitely. Coaching is
             // already best-effort inside runFinalize, so a timeout leaves the session
             // retryable rather than blocking the recording from finishing.
@@ -147,6 +152,21 @@ public struct ClaudeCodeCLIClient: CoachingLLM {
                 guard process.isRunning else { return }
                 Self.logger.error("ClaudeCodeCLIClient: timed out after \(timeout, privacy: .public)s; terminating")
                 process.terminate()
+            }
+
+            // Off the caller's thread: a pipe holds ~64KB, and an interview transcript
+            // routinely exceeds that, so writing it blocks until the CLI drains stdin. Doing
+            // that inline would block a Swift concurrency cooperative thread — and if the CLI
+            // never drains, it would hang before the timeout above could fire.
+            DispatchQueue.global().async {
+                let handle = inPipe.fileHandleForWriting
+                do {
+                    try handle.write(contentsOf: Data(stdin.utf8))
+                } catch {
+                    // Broken pipe means the CLI already exited; terminationHandler reports why.
+                    Self.logger.error("ClaudeCodeCLIClient: stdin write failed: \(String(describing: error), privacy: .public)")
+                }
+                try? handle.close()
             }
         }
     }
