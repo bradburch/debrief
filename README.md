@@ -82,8 +82,9 @@ to *Debrief* instead of your terminal.
 
 1. **Grant permissions.** On first launch macOS asks for **Microphone** and
    **Notifications** (the notification's "Record" action button doesn't work
-   without it); the first time you record it asks for **Screen Recording**
-   (that's how the other side's audio is captured). Grant all three, then
+   without it); the first time you record it may ask to record **system audio**
+   (that's how the other side's audio is captured — macOS lists this under
+   Privacy & Security → Screen & System Audio Recording). Grant all three, then
    relaunch if prompted.
 2. **Add your Claude API key.** Open the main window → **Settings**, paste a key
    starting with `sk-ant-`. It's written to a `secrets.json` file under

@@ -3,7 +3,8 @@
 Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-app.sh && open Debrief.app`.
 
 1. **Permissions**: first launch prompts for Microphone and Notifications; starting a
-   recording prompts for Screen Recording (grant in System Settings, relaunch).
+   recording may prompt to record system audio — System Settings lists this under
+   Privacy & Security > Screen & System Audio Recording (grant, relaunch).
 2. **Detection**: start a test meeting (meet.google.com in a browser, mic on). Within ~15s
    the menu-bar icon becomes a phone, the popover shows "Call detected", and a
    notification pops up (first run: grant the notification permission prompt). Clicking
@@ -56,22 +57,45 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
     network activity involved — this is a local read of macOS Calendar. Denying the
     prompt (or Privacy & Security > Calendars later) leaves the section showing
     "Denied" and Debrief keeps using `upcoming.json`.
-16. **Continuity/cellular calls**: confirmed symptom — the call IS detected/recorded, but
-    the "Them" bar never moves during a Continuity cellular call (an iPhone call answered
-    on the Mac), unlike Zoom/Meet/FaceTime/browser calls. Root cause not yet confirmed:
-    either SCK never delivers audio buffers for that call (a platform-level exclusion of
-    Call Relay audio from the capture mix — not fixable from `SystemAudioRecorder`), or
-    buffers arrive but are silent (a different, possibly fixable bug). `SystemAudioRecorder`
-    now logs `"buffer delivered, rms=..."` at `.debug` roughly every 3s while any system
-    audio is captured. To test: open Console.app, filter subsystem `com.debrief.app`
-    category `capture`, then record a FaceTime Audio call first (control — confirm the log
-    line appears with a nonzero rms while talking, and the "Them" bar moves), then
-    back-to-back record a Continuity cellular call and watch both the log and the "Them"
-    bar. Three possible outcomes:
-    - No log line at all during the Continuity call → SCK isn't delivering buffers →
-      platform-level exclusion, confirmed. Nothing to fix in Debrief.
-    - Log line appears but `rms` stays ~0 → buffers arrive silent → a different bug, keep
-      investigating (sample format? per-app mute?).
-    - Log line appears with nonzero `rms` but the "Them" bar still doesn't move → the bug
-      is in the UI level-forwarding path (`onLevel`), not capture — file separately.
-    Note which outcome occurred here once confirmed.
+16. **Continuity/cellular calls** — *root cause found and fixed 2026-07-29; this item is
+    now a regression test.* History: during a Continuity cellular call (an iPhone call
+    answered on the Mac) the "Them" bar never moved and the caller was absent from the
+    transcript, while Zoom/Meet/browser calls captured fine. Diagnosis from a live call:
+    ScreenCaptureKit delivered `sys-*.wav` chunks at full rate and correct length, every
+    sample bit-exact zero. The control was free — of 26 recordings on disk, 20+ had
+    healthy `sys` RMS (0.03–0.09) and only the Continuity ones were silent, so capture
+    was not broken generally.
+
+    The cause was structural, not a bug: `SCContentFilter(display:excludingWindows:)`
+    scopes capture to audio from *windows on that display*, and a Continuity call is
+    voiced by a windowless system daemon. It was never in the mix SCK was faithfully
+    delivering. No `SCStreamConfiguration` change reaches it. `SystemAudioRecorder` now
+    uses a **CoreAudio process tap** instead, which scopes by what reaches the output
+    device; against the same live call it tracked speech at -15 dB and gaps at -80 dB
+    while SCK wrote zeros.
+
+    To regression-test, record a Continuity cellular call and confirm the "Them" bar
+    moves and the caller appears in the transcript. If it looks silent again, the
+    fastest triage is the chunks themselves rather than the UI — a full-length `sys`
+    chunk of pure zeros means the tap is delivering but empty, a missing or short chunk
+    means it isn't delivering at all:
+
+    ```sh
+    python3 - <<'EOF'
+    import array, glob, math, os, wave
+    d = max(glob.glob(os.path.expanduser(
+        "~/Library/Application Support/Debrief/recordings/*")), key=os.path.getmtime)
+    for f in sorted(glob.glob(os.path.join(d, "*.wav"))):
+        w = wave.open(f, "rb"); n, sw = w.getnframes(), w.getsampwidth()
+        a = array.array({2: "h", 4: "f"}[sw]); a.frombytes(w.readframes(n))
+        rms = math.sqrt(sum((v / (32768.0 if sw == 2 else 1.0)) ** 2 for v in a) / len(a)) if len(a) else 0
+        print(f"{os.path.basename(f):14s} {n/w.getframerate():5.1f}s "
+              f"{'SILENT' if rms == 0 else f'rms={rms:.5f}'}")
+    EOF
+    ```
+
+    Also worth checking here, since the tap replaced SCK: **auto-stop still works.** The
+    old SCK path ran through `com.apple.replayd`, which held mic input for the whole
+    recording and had to be denylisted in `DetectionProbes` or `callLikelyEnded` never
+    fired. The tap runs in-process, so `getpid()` self-exclusion covers it — confirm a
+    call still auto-stops after it ends rather than recording indefinitely.

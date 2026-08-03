@@ -24,10 +24,19 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
          register the bundle; without it the app never appears in Notifications
          settings and requestAuthorization returns "not allowed". -->
     <key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <!-- 14.2 is the floor for CoreAudio process taps, which SystemAudioRecorder needs
+         to hear Continuity/cellular call audio (see checklist #16). Keep in sync with
+         `platforms:` in Package.swift. -->
+    <key>LSMinimumSystemVersion</key><string>14.2</string>
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Debrief records your side of interview calls to transcribe and coach you.</string>
+    <!-- SystemAudioRecorder captures the other participants with a CoreAudio process
+         tap. Present so macOS has a string to show if it ever prompts for system-audio
+         capture — following the NSCalendarsFullAccessUsageDescription lesson below,
+         where a missing key CRASHED instead of prompting. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Debrief records the other participants on interview calls to transcribe and coach you. Audio stays on this Mac.</string>
     <!-- Required for EKEventStore.requestFullAccessToEvents() (CalendarEvents.swift) —
          without this key the request CRASHES instead of prompting. Read-only: Debrief
          pre-fills a recording's company/round type/notes from your scheduled interviews,
