@@ -140,6 +140,19 @@ final class SystemAudioTapBufferTests: XCTestCase {
         XCTAssertEqual(try writtenSeconds(writer, dir), 0, accuracy: 0.0001)
     }
 
+    /// An unanchored clock must pad nothing. `captureStart` is 0 until `start()` runs, and
+    /// CFAbsoluteTime's epoch is 2001 — so treating 0 as a real anchor would ask for
+    /// ~10^13 frames and write silence until the disk filled.
+    func testUnanchoredClockPadsNothing() throws {
+        let (recorder, writer, dir) = try makeRecorder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        XCTAssertEqual(recorder.captureStart, 0, "captureStart should start unanchored")
+        recorder.padSilenceToNow(format: tapFormat)
+
+        XCTAssertEqual(try writtenSeconds(writer, dir), 0, accuracy: 0.0001)
+    }
+
     /// Frames already delivered by the tap must count against the gap, so padding only
     /// covers what's actually missing.
     func testDeliveredFramesReduceThePad() throws {

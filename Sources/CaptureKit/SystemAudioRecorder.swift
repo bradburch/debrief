@@ -50,6 +50,11 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
 
     public func start() async throws {
         framesWritten = 0
+        // Anchored here, before any device setup can fail. If it were set later, a
+        // start() that threw partway would leave captureStart at 0 while tapFormat was
+        // already set, and a subsequent stop() would ask padSilenceToNow to fill every
+        // second since 2001 (CFAbsoluteTime's epoch) — writing silence until the disk filled.
+        captureStart = CFAbsoluteTimeGetCurrent()
         do {
             try startCapture()
         } catch {
@@ -109,7 +114,6 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
             [weak self] _, inInputData, _, _, _ in
             self?.handle(inInputData)
         }, "create IOProc")
-        captureStart = CFAbsoluteTimeGetCurrent()
         try Self.check(AudioDeviceStart(aggregateID, ioProcID), "start aggregate device")
         Self.logger.info("SystemAudioRecorder: tap started, format \(format, privacy: .public)")
     }
@@ -178,6 +182,9 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
     /// Recomputed from the wall clock rather than accumulated, so a long idle stretch or
     /// a dropped buffer self-corrects on the next callback instead of drifting.
     func padSilenceToNow(format: AVAudioFormat) {
+        // Belt-and-braces against an unanchored clock: without this, captureStart == 0
+        // would mean "pad every second since 2001" and fill the disk.
+        guard captureStart > 0 else { return }
         let expected = Int64((CFAbsoluteTimeGetCurrent() - captureStart) * format.sampleRate)
         var missing = expected - framesWritten
         // Below ~20ms it's IOProc jitter, not a gap worth representing.
