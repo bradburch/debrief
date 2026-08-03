@@ -99,3 +99,19 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
     recording and had to be denylisted in `DetectionProbes` or `callLikelyEnded` never
     fired. The tap runs in-process, so `getpid()` self-exclusion covers it — confirm a
     call still auto-stops after it ends rather than recording indefinitely.
+17. **Interview types (Settings)**: the pane lists every round type, with "Transcript only"
+    under `Mock Interview`. Check each path the unit tests can't reach:
+    - **New type…** → name it "Take Home Review", confirm the caption reads "Saved as
+      take_home_review.md", save, and confirm it appears in the picker when tagging a
+      recording. Re-open **New type…** and type the same name: Save must stay disabled
+      (collision), as it must for a name with no usable characters ("!!!").
+    - **Duplicate** a scored type, save, and confirm the copy is independently editable.
+    - **Delete** an unused type: confirms, then disappears. Delete one that a recording
+      uses: blocked with a count, and the type survives. Deleting is only ever a prompt
+      file — recordings already tagged with it keep their tag.
+    - **Transcript only** checkbox: tick it on a scored type, save, reopen — the marker
+      persists and is not duplicated in the prompt text. Untick it and the body survives.
+    - Record a short session tagged `Mock Interview`: it transcribes, the session shows
+      "transcript only" instead of a debrief, and **no API call is made** (watch the
+      Pipeline tab, and confirm Settings > "Retry pending debriefs" reports "All caught
+      up" rather than queueing it). "Re-run debriefs on current rubric" must skip it too.

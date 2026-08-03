@@ -16,6 +16,15 @@ public struct CoachingService: Sendable {
             guard let detail = try db.sessionDetail(id: sessionId) else {
                 throw ClaudeError.emptyResponse
             }
+            // Transcript-only round types stop here: recorded and transcribed, never scored.
+            // The guard lives in coach() rather than at the call sites because all three
+            // paths — finalize, retryAllPending, and recoachAll — funnel through here, so
+            // one check keeps a practice round from ever billing an LLM call. `skipped` is
+            // terminal, so the retry sweeps stop offering it too.
+            if prompts.isTranscriptOnly(detail.session.roundType) {
+                try db.markCoachingSkipped(sessionId: sessionId)
+                return
+            }
             let history = try db.recentWeaknessTags(limitSessions: historyWindow)
             let system = try prompts.assembleSystemPrompt(roundType: detail.session.roundType,
                                                           historyTags: history,

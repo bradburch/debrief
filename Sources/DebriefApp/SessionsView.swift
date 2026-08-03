@@ -147,6 +147,8 @@ struct SessionsView: View {
         switch status {
         case .pending: Text("coaching…").font(.caption2).foregroundStyle(.secondary)
         case .failed: Text("failed").font(.caption2).foregroundStyle(.red)
+        // Not a shortfall: a transcript-only round is finished when it's transcribed.
+        case .skipped: Text("transcript only").font(.caption2).foregroundStyle(.secondary)
         case .complete: EmptyView()
         }
     }
@@ -389,6 +391,11 @@ struct SessionDetailView: View {
                             ForEach(items, id: \.self) { Text("• \($0)").frame(maxWidth: .infinity, alignment: .leading) }
                         }
                     }
+                } else if d.session.coachingStatus == .skipped {
+                    // Deliberate, not missing — say so, or it reads as a failure.
+                    Text("\(d.session.roundType.displayName) is transcript-only, so there's no debrief. "
+                         + "The transcript is on the right.")
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("No debrief yet (\(d.session.coachingStatus.rawValue)).")
                 }
