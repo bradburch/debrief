@@ -49,7 +49,7 @@ public struct OpenAICompatibleClient: CoachingLLM {
           "advancement": "lean_no",
           "advancement_rationale": "The one thing that decided it.",
           "weakness_tags": ["rambling_intro"],
-          "highlights": [{"t": "00:14:32", "note": "Strong recovery after the hint"}],
+          "highlights": [{"t": "00:03:11", "note": "Buried the result under three minutes of setup"}, {"t": "00:14:32", "note": "Strong recovery after the hint — do this again"}, {"t": "00:28:40", "note": "Asked what the team measures, unprompted"}],
           "action_items": ["Prep a 90-second intro"],
           "process_notes": [{"t": "00:41:05", "note": "Two more rounds; system design next, then a panel. Decision by Friday."}]
         }
@@ -58,7 +58,7 @@ public struct OpenAICompatibleClient: CoachingLLM {
         - All eight top-level fields are required. "scores" must contain exactly these \(dimensions.count) keys — \(keyList) — with integer values 1-5, and no other keys.
         - "advancement" must be exactly one of: \(Advancement.allCases.map { "\"\($0.rawValue)\"" }.joined(separator: ", ")). Decide it from the evidence, not by averaging "scores".
         - "weakness_tags": use the exact snake_case spellings from the vocabulary above; do not invent or reword tags.
-        - "highlights" and "action_items": 2-5 items each. "t" is an "HH:MM:SS" timestamp from the transcript.
+        - "highlights": 3-5 items, and at least one of them must be a genuine strength, not a problem. "t" is an "HH:MM:SS" timestamp from the transcript. "action_items": 2-5 items.
         - "process_notes": 0-6 items, same {"t","note"} shape as highlights. Use [] when the interview process, next steps, and timeline never came up — [] is a correct answer, not a failure.
         - Inside string values, escape quotation marks you quote from the transcript as \\\" and write line breaks as \\n.
         """
