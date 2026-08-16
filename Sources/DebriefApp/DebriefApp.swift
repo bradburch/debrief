@@ -23,10 +23,13 @@ struct DebriefApp: App {
     /// both. Recording wins — it is the state where doing the wrong thing loses audio — and
     /// running jobs surface as the hourglass whenever nothing is being recorded. The popover
     /// lists the jobs themselves either way.
+    /// Order is deliberate: a failed *start* outranks a running job, because it means nothing
+    /// is being captured right now and the user has to act. Hiding it behind an hourglass
+    /// reads as "busy, all fine".
     private var menuBarSymbol: String {
         if case .recording = env.coordinator.recordingPhase { return "record.circle.fill" }
-        if env.coordinator.hasActiveJobs { return "hourglass.circle" }
         if case .failed = env.coordinator.recordingPhase { return "exclamationmark.circle" }
+        if env.coordinator.hasActiveJobs { return "hourglass.circle" }
         if env.coordinator.finalizeJobs.contains(where: { $0.failure != nil }) { return "exclamationmark.circle" }
         return env.callDetected ? "phone.circle.fill" : "waveform.circle"
     }
