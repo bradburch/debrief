@@ -30,15 +30,27 @@ struct InterviewTypesSection: View {
                         }
                     }
                     Spacer()
-                    Button("Edit") { editing = draft(for: type, duplicating: false) }
-                    Button("Duplicate") { editing = draft(for: type, duplicating: true) }
-                    Button(role: .destructive) { attemptDelete(type) } label: { Text("Delete") }
+                    Button { editing = draft(for: type, duplicating: false) } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    Button { editing = draft(for: type, duplicating: true) } label: {
+                        Label("Duplicate", systemImage: "plus.square.on.square")
+                    }
+                    Button(role: .destructive) { attemptDelete(type) } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
                 }
+                // macOS push buttons drop a Label's icon unless asked; three same-shaped
+                // buttons per row are hard to tell apart at a glance without them.
+                .labelStyle(.titleAndIcon)
             }
-            Button("New type…") {
+            Button {
                 editing = TypeDraft(name: "", rawValue: nil, markdown: Self.starterMarkdown,
                                     transcriptOnly: false, isNew: true)
+            } label: {
+                Label("New type…", systemImage: "plus")
             }
+            .labelStyle(.titleAndIcon)
             Text("Each type is a markdown file in the prompts folder. Transcript-only types are recorded and transcribed but never sent to an LLM, so they cost nothing and stay out of your trends.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error {
@@ -186,6 +198,7 @@ private struct TypeEditor: View {
                 Button("Save") {
                     if let rawValue = resolvedRawValue { onSave(draft, rawValue) }
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(resolvedRawValue == nil)
             }

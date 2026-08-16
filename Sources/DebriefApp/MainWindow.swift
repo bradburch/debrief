@@ -66,6 +66,7 @@ struct MainWindow: View {
     }
 }
 
+
 /// A re-run takes ~30s per session and outlives the Settings tab, so its progress is shown
 /// app-wide rather than only where it was started. Absent unless a run is in flight.
 struct RecoachBar: View {
@@ -131,6 +132,7 @@ struct RecordingBar: View {
                     } label: {
                         Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
                     }
+                    .buttonStyle(.borderedProminent)   // the one thing to do on an idle bar
                 }
             }
             if !env.coordinator.finalizeJobs.isEmpty {

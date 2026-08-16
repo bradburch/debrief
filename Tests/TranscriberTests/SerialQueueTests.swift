@@ -48,6 +48,40 @@ final class SerialQueueTests: XCTestCase {
         XCTAssertEqual(value, 42)
     }
 
+    /// The case the test above cannot reach: the throwing body is one that a *later* body is
+    /// already chained behind. That is what `tail = Task { _ = try? await work.value }` is for
+    /// — the chain node has to complete normally whatever the body did, or every submission
+    /// behind a failed decode is stranded. Submitting into an empty queue never touches it.
+    func testAThrowingBodyDoesNotStrandTheSubmissionAlreadyQueuedBehindIt() async throws {
+        struct Boom: Error {}
+        let queue = SerialQueue()
+        let latch = Latch()
+
+        let first = Task { () -> Bool in
+            do {
+                _ = try await queue.run { await latch.wait(); throw Boom() }
+                return false
+            } catch is Boom { return true } catch { return false }
+        }
+        for _ in 0..<1000 where await latch.waitingCount == 0 { await Task.yield() }
+        let parked = await latch.waitingCount
+        XCTAssertEqual(parked, 1, "the first body never reached the latch")
+
+        let second = Task { try await queue.run { 7 } }
+        // Wait for the submission itself, not just for the task to exist: `run` chains onto
+        // the tail as soon as it enters the actor, and only then is the second body genuinely
+        // behind a running one rather than behind a queue that already drained.
+        for _ in 0..<1000 where await queue.submissionCount < 2 { await Task.yield() }
+        let submitted = await queue.submissionCount
+        XCTAssertEqual(submitted, 2, "the second body never chained on")
+
+        await latch.open()
+        let firstThrew = await first.value
+        XCTAssertTrue(firstThrew, "expected the first body's error to propagate to its caller")
+        let value = try await second.value
+        XCTAssertEqual(value, 7, "a thrown body wedged the submission queued behind it")
+    }
+
     /// Pins the deliberate choice that a body outlives its caller's cancellation. `run` hands
     /// the body to its own task, which does not inherit cancellation — cancelling would buy
     /// nothing (a WhisperKit decode ignores it) and abandoning a body mid-chain is how the

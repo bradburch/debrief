@@ -7,6 +7,20 @@ struct PipelineView: View {
     @State private var pipelines: [CompanyPipeline] = []
 
     var body: some View {
+        Group {
+            if pipelines.isEmpty {
+                ContentUnavailableView(
+                    "No pipeline yet",
+                    systemImage: "building.2",
+                    description: Text("Record an interview and its company appears here, round by round."))
+            } else {
+                pipelineList
+            }
+        }
+        .onAppear(perform: reload)
+    }
+
+    private var pipelineList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 ForEach(pipelines) { pipe in
@@ -18,22 +32,12 @@ struct PipelineView: View {
                                 Button { env.revealSession(s.id) } label: {
                                     VStack(spacing: 4) {
                                         Text(s.roundType.displayName).font(.caption)
-                                        // This view IS the advancement story, so the verdict leads
-                                        // and the mean is a subscript. A pre-v3 debrief has a score
-                                        // but no verdict; an uncoached session has neither.
-                                        if let advancement = s.advancement {
-                                            Text(advancement.displayName).bold()
-                                                .foregroundStyle(Color.forAdvancement(advancement))
-                                        } else if s.overallScore != nil {
-                                            Text("—").foregroundStyle(.secondary)
-                                                .help("Debriefed before verdicts existed — re-run in Settings.")
-                                        } else {
-                                            Text("—").foregroundStyle(.secondary)
-                                        }
-                                        if let score = s.overallScore {
-                                            Text(String(format: "%.1f", score)).font(.caption2).monospacedDigit()
-                                                .foregroundStyle(.secondary)
-                                        }
+                                        // This view IS the advancement story, so the verdict
+                                        // leads and the mean is a subscript — and every cell
+                                        // keeps its shape when either is missing.
+                                        ScoreBadge(advancement: s.advancement,
+                                                   overallScore: s.overallScore,
+                                                   style: .stacked, showsPlaceholder: true)
                                         Text(s.date.formatted(date: .numeric, time: .omitted))
                                             .font(.caption2).foregroundStyle(.secondary)
                                     }
@@ -54,21 +58,20 @@ struct PipelineView: View {
                         HStack {
                             Text(pipe.company.name).font(.headline)
                             Spacer()
-                            Picker("", selection: statusBinding(for: pipe.company)) {
+                            // Titled, then hidden: an empty-string label leaves VoiceOver
+                            // announcing an unnamed pop-up in a view with one per company.
+                            Picker("Status", selection: statusBinding(for: pipe.company)) {
                                 ForEach(CompanyStatus.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                             }
+                            .labelsHidden()
+                            .accessibilityLabel("Status for \(pipe.company.name)")
                             .frame(width: 110)
                         }
                     }
                 }
-                if pipelines.isEmpty {
-                    Text("No sessions yet. Record an interview to start your pipeline.")
-                        .foregroundStyle(.secondary)
-                }
             }
             .padding()
         }
-        .onAppear(perform: reload)
     }
 
     private func reload() { pipelines = (try? env.db.pipeline()) ?? [] }

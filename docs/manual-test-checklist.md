@@ -151,11 +151,24 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
     - Both sessions appear in Sessions with their own company, duration, and debrief, and the
       list refreshes on its own as each job finishes.
     - Recover an old directory from the recovery prompt *while* a recording is in progress:
-      allowed now, and it must not disturb the live recording.
-20. **Quit with a debrief in flight**: stop a recording and quit (popover Quit, ⌘Q from the
-    main window, or the Dock) while the job is still running. Debrief must ask before
-    quitting; "Wait" cancels the quit, "Quit anyway" exits and the next launch offers the
-    audio for recovery rather than losing it. Quitting with only *finished* job rows showing
-    must not prompt. Also: after a debrief that has already landed in the DB, relaunch and
-    confirm the session is **not** offered for recovery a second time (the session id stamped
-    into `manifest.json` is what prevents the duplicate).
+      allowed now, and it must not disturb the live recording. The prompts stay in the popover
+      while recording — they are rendered above the recording/idle branch, not inside the idle
+      one, so hitting Record must not make them disappear.
+20. **Quit with work in flight**: both states now prompt, and they are different prompts.
+    - *Mid-debrief*: stop a recording and quit (popover Quit, ⌘Q from the main window, or the
+      Dock) while the job is still running. Debrief must ask before quitting; "Wait" cancels
+      the quit, "Quit anyway" exits and the next launch offers the audio for recovery rather
+      than losing it. Quitting with only *finished* job rows showing must not prompt.
+    - *Mid-recording*: quit while a recording is in progress, without stopping it. The alert
+      must say a recording is in progress and offer "Keep recording" / "Quit anyway" — this
+      quit loses the chunk still buffered in memory (up to ~30s) and the typed company/notes,
+      so a silent exit is the expensive one. "Quit anyway", then relaunch: the chunks already
+      flushed must be offered for recovery.
+    - *Both at once*: start a second recording while the first is still finalizing, then quit.
+      One combined alert, naming both.
+    - Finally: after a debrief that has already landed in the DB, relaunch and confirm the
+      session is **not** offered for recovery a second time (the session id stamped into
+      `manifest.json` is what prevents the duplicate). This part needs **Settings → Audio →
+      "Keep raw audio after transcription"** on (and a relaunch to take effect) — with it off
+      the whole session directory is deleted on success, so there is nothing left to re-offer
+      and the stamp is never exercised.

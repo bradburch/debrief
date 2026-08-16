@@ -137,7 +137,9 @@ final class CoachingServiceTests: XCTestCase {
     /// same feedback row — the second caller stops at the claim.
     func testCoachBailsWhileAnotherCallIsAlreadyRunningOnThatSession() async throws {
         let id = try seedSession()
-        try db.setCoachingStatus(sessionId: id, .running)
+        // Through the same door the owning call would use, not a bare status write: the bail
+        // is `claimCoaching` returning nil, and that is the behaviour worth pinning.
+        XCTAssertEqual(try db.claimCoaching(sessionId: id), .pending)
 
         try await CoachingService(db: db, prompts: prompts, llm: NeverCalledLLM()).coach(sessionId: id)
 

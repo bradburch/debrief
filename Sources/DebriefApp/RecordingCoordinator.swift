@@ -184,6 +184,12 @@ public final class RecordingCoordinator: ObservableObject {
         }
         let startedAt = Date()
         recordingPhase = .recording(started: startedAt)
+        // Held outside the `do` so the catch can stop whatever was already started. `.failed`
+        // is a startable state, so without this a retry after a half-started pair leaves the
+        // first recorder's tap live — orphaned recorders stack up, keep capturing, and the
+        // next session's audio is written by a recorder nothing holds a reference to.
+        var mic: StreamRecorder?
+        var sys: StreamRecorder?
         do {
             try FileManager.default.createDirectory(at: recordingsRoot, withIntermediateDirectories: true)
             let dir = try RecordingStore.createSessionDirectory(root: recordingsRoot)
@@ -191,23 +197,33 @@ public final class RecordingCoordinator: ObservableObject {
             try RecordingStore.writeManifest(.init(startedAt: startedAt, finalized: false), in: dir)
             let micW = try WavChunkWriter(directory: dir, prefix: "mic", chunkDuration: chunkDuration)
             let sysW = try WavChunkWriter(directory: dir, prefix: "sys", chunkDuration: chunkDuration)
-            let mic = makeMicRecorder(micW)
-            let sys = makeSystemRecorder(sysW)
+            let micRecorder = makeMicRecorder(micW)
+            let sysRecorder = makeSystemRecorder(sysW)
+            mic = micRecorder
+            sys = sysRecorder
             // Pinned to `key`: a level callback queued by the previous session's recorder can
             // land after that session has been handed off, and must not drive this one's meter.
-            mic.onLevel = { [weak self] level in
+            micRecorder.onLevel = { [weak self] level in
                 Task { @MainActor in self?.recordLevel(level, stream: .mic, for: key) }
             }
-            sys.onLevel = { [weak self] level in
+            sysRecorder.onLevel = { [weak self] level in
                 Task { @MainActor in self?.recordLevel(level, stream: .system, for: key) }
             }
-            try await mic.start()
-            try await sys.start()
+            try await micRecorder.start()
+            try await sysRecorder.start()
             live = LiveSession(key: key, dir: dir, micWriter: micW, sysWriter: sysW,
-                               micRecorder: mic, sysRecorder: sys)
+                               micRecorder: micRecorder, sysRecorder: sysRecorder)
             live?.liveTask = startLiveTranscription(owner: key)
         } catch {
             live = nil
+            // Tear down the half-started pair — the usual failure is the system tap being
+            // refused *after* the mic engine is already running. Both stops are safe on a
+            // recorder that never started (SystemAudioRecorder.releaseDevices is idempotent,
+            // and finishing an empty writer is a no-op) and their failures are irrelevant
+            // here: the start has already failed. `recordingPhase` is still `.recording`
+            // across these awaits, so a second Record tap meanwhile still bails.
+            try? await mic?.stop()
+            try? await sys?.stop()
             recordingPhase = .failed(message: "Could not start recording: \(error.localizedDescription)")
         }
     }
@@ -291,10 +307,11 @@ public final class RecordingCoordinator: ObservableObject {
     /// 4. await the cancelled live loop, so no transcription is in flight at hand-off;
     /// 5. enqueue the finalize with the by-value cache.
     ///
-    /// Step 4 can take as long as one chunk decode — WhisperKit decodes are not
-    /// cancellation-responsive — but recording is already startable by then, and the
-    /// directory is claimed throughout, so it is neither offered for recovery nor visible as
-    /// a job for that moment. A chunk the loop was decoding is dropped from the snapshot: its
+    /// Step 4 can take as long as **two** chunk decodes — WhisperKit decodes are not
+    /// cancellation-responsive, and they run through one `SerialQueue`, so the live loop's own
+    /// decode may itself be queued behind a decode a concurrent finalize job is holding — but
+    /// recording is already startable by then, and the directory is claimed throughout, so it
+    /// is neither offered for recovery nor visible as a job for that moment. A chunk the loop was decoding is dropped from the snapshot: its
     /// write lands nowhere by design, and the job simply decodes it again. One chunk slower,
     /// against never letting a late write pick a session.
     @discardableResult
@@ -456,6 +473,7 @@ public final class RecordingCoordinator: ObservableObject {
         // Tracked across the do/catch below so the catch block can compensate for a
         // session row that got inserted but whose segments then failed to persist.
         var insertedSessionId: Int64?
+        var insertedCompanyId: Int64?
         var segmentsInserted = false
 
         do {
@@ -469,6 +487,7 @@ public final class RecordingCoordinator: ObservableObject {
 
             updateJob(jobId) { $0.status = "Saving…" }
             let company = try db.fetchOrCreateCompany(named: metadata.company)
+            insertedCompanyId = company.id
             let durationSeconds = explicitDurationSeconds
                 ?? Int(Double(max(micChunks.count, sysChunks.count)) * chunkDuration)
             let session = try db.insertSession(InterviewSession(
@@ -495,8 +514,14 @@ public final class RecordingCoordinator: ObservableObject {
             // interview it never saw.
             guard inserted > 0 else { throw FinalizeError.noSpeechInRecording }
             segmentsInserted = true
-            try RecordingStore.writeManifest(.init(startedAt: startedAt, finalized: true,
-                                                   sessionId: session.id), in: dir)
+            // `try?`, unlike the writes above: by this point the session and its transcript are
+            // in the database, which is the truth — the manifest is only a hint to the recovery
+            // scan, and the scan's own `sessionHasTranscript` filter already suppresses this
+            // directory whether or not the stamp lands. Throwing here would route into the
+            // catch, report a finished debrief as "Failed", and (with audio kept) offer the
+            // same interview for recovery again, inserting it twice.
+            try? RecordingStore.writeManifest(.init(startedAt: startedAt, finalized: true,
+                                                    sessionId: session.id), in: dir)
             if deleteAudioOnSuccess { try? RecordingStore.deleteSession(at: dir) }
 
             updateJob(jobId) { $0.status = "Coaching…" }
@@ -518,6 +543,11 @@ public final class RecordingCoordinator: ObservableObject {
                     try db.deleteSession(id: id)
                 } catch {
                     logger.error("failed to delete orphaned session \(id, privacy: .public): \(error, privacy: .public)")
+                }
+                // The company row was created before the segments failed; don't leave a
+                // zero-session company in Pipeline. No-op if other sessions reference it.
+                if let companyId = insertedCompanyId {
+                    try? db.deleteCompanyIfUnused(id: companyId)
                 }
                 // Outside the do/catch on purpose: the stamp must go even when the delete
                 // fails. A stamp naming a row that isn't there — or one that is there with no

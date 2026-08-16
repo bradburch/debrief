@@ -15,12 +15,18 @@ import Foundation
 actor SerialQueue {
     private var tail: Task<Void, Never>?
 
+    /// Bodies submitted so far. Exists for `SerialQueueTests`, which has to know a second
+    /// submission has actually chained onto a *running* predecessor — otherwise the test
+    /// quietly degrades into the empty-queue case it was written to be different from.
+    private(set) var submissionCount = 0
+
     /// Bodies are deliberately **not** cancelled with the caller: `body` runs in its own
     /// task, so a cancelled caller still leaves the chain intact and the work running.
     /// Cancelling would buy nothing anyway — a WhisperKit decode is not
     /// cancellation-responsive — and abandoning a body mid-chain is how the queue would
     /// wedge. `SerialQueueTests` pins this behaviour.
     func run<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
+        submissionCount += 1
         let previous = tail
         let work = Task<T, Error> {
             await previous?.value

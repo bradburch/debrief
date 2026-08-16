@@ -58,6 +58,26 @@ extension AppDatabase {
         }
     }
 
+    public func findCompany(named name: String) throws -> Company? {
+        try dbWriter.read { db in
+            try Company.filter(Column("name") == name).fetchOne(db)
+        }
+    }
+
+    /// Deletes a company only if no session references it. Used by the no-speech
+    /// compensation path: `fetchOrCreateCompany` runs before segments are inserted, so a
+    /// finalize that fails and deletes its session row would otherwise leave a stray
+    /// zero-session company behind in Pipeline.
+    public func deleteCompanyIfUnused(id: Int64) throws {
+        try dbWriter.write { db in
+            let inUse = try Int.fetchOne(
+                db, sql: "SELECT 1 FROM session WHERE companyId = ? LIMIT 1", arguments: [id])
+            if inUse == nil {
+                try db.execute(sql: "DELETE FROM company WHERE id = ?", arguments: [id])
+            }
+        }
+    }
+
     public func updateCompanyStatus(id: Int64, status: CompanyStatus) throws {
         try dbWriter.write { db in
             try db.execute(sql: "UPDATE company SET status = ? WHERE id = ?", arguments: [status.rawValue, id])
@@ -167,6 +187,33 @@ extension AppDatabase {
         }
     }
 
+    /// **Claims a session for coaching, atomically.** Returns the status it held *before* the
+    /// claim, or nil if it was already `running` — someone else owns the LLM call, and the
+    /// caller must not make one.
+    ///
+    /// Read and write happen in a single write transaction because `CoachingService` is a
+    /// nonisolated struct: a finalize job and a Retry/Re-run sweep coach from different
+    /// threads, so a plain "read the status, then write `running`" leaves a window in which
+    /// both read `pending`, both write `running`, and both bill a call and race to write the
+    /// same feedback row. Nothing about being on the main actor protects this — the coaching
+    /// path never touches it.
+    ///
+    /// The returned prior status is also the only trustworthy one to restore on cancellation:
+    /// a status fetched before the transaction can be stale by the time the claim lands.
+    public func claimCoaching(sessionId: Int64) throws -> CoachingStatus? {
+        try dbWriter.write { db in
+            guard let raw = try String.fetchOne(db, sql: "SELECT coachingStatus FROM session WHERE id = ?",
+                                                arguments: [sessionId]) else { return nil }
+            // An unrecognised value is treated as `pending` rather than refused: the column
+            // has no CHECK constraint, and refusing would strand the session in every sweep.
+            let previous = CoachingStatus(rawValue: raw) ?? .pending
+            guard previous != .running else { return nil }
+            try db.execute(sql: "UPDATE session SET coachingStatus = 'running' WHERE id = ?",
+                           arguments: [sessionId])
+            return previous
+        }
+    }
+
     /// Launch-time reclaim: a `running` row can only be left behind by a process that died
     /// mid-coach, since nothing survives the crash to finish it. Returns it to the retry
     /// sweeps rather than stranding it in a state they all skip.
@@ -249,6 +296,26 @@ extension AppDatabase {
                 .order(Column("scheduledDate"))
                 .limit(20)
                 .fetchAll(db)
+        }
+    }
+
+    /// Deletes plans scheduled more than `days` days ago. Called once per launch.
+    ///
+    /// The counterpart to `plannedCalls` being a *filter*: a plan is consumed only by a
+    /// finalize that produced a session, so a call you planned and never recorded stays in the
+    /// table forever — and 24h later it has dropped out of every list, which means the delete
+    /// button that would have removed it is gone too. Invisible and undeletable is the worst
+    /// of both, so the row eventually goes on its own.
+    ///
+    /// 30 days rather than something tighter because the row costs nothing and the only harm a
+    /// stale plan does is invisible; an interview that slips a fortnight, or a laptop closed
+    /// for a week, must still find its plan on the recovery prompt when it comes back.
+    @discardableResult
+    public func purgeStalePlannedCalls(olderThan days: Int = 30, now: Date = Date()) throws -> Int {
+        try dbWriter.write { db in
+            try db.execute(sql: "DELETE FROM plannedCall WHERE scheduledDate < ?",
+                           arguments: [now.addingTimeInterval(-Double(days) * 24 * 3600)])
+            return db.changesCount
         }
     }
 

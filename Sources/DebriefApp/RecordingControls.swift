@@ -72,9 +72,13 @@ struct RecordingControls: View {
         }
     }
 
+    /// Prominent on both surfaces: while a recording is running it is the primary action,
+    /// and it replaces "Start recording" — which is prominent for the same reason — so
+    /// neither surface ever shows two.
     private var stopButton: some View {
         Button("Stop & Debrief") {
             Task { await env.stopAndDebrief() }
         }
+        .buttonStyle(.borderedProminent)
     }
 }

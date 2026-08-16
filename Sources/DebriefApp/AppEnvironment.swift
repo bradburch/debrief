@@ -367,6 +367,10 @@ final class AppEnvironment: ObservableObject {
         // from every sweep, so without this they would never be retried. Safe here because
         // nothing in this process can be coaching yet.
         _ = try? db.resetRunningCoaching()
+        // Same launch sweep, different orphan: `plannedCalls()` only filters old rows, so a
+        // plan for a call that was never recorded drops off every surface after 24h while
+        // staying in the table — including the surface with its delete button.
+        _ = try? db.purgeStalePlannedCalls()
         refreshRecoverables()
         refreshPlannedCalls()
         startTimers()

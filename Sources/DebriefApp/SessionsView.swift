@@ -23,17 +23,16 @@ struct SessionsView: View {
                 // Planned calls are not sessions and never appear in the list below — they
                 // live in their own table precisely so they can't show up as zero-minute
                 // rows here or in Pipeline/Trends.
-                PlannedCallsSection()
-                Divider()
+                if !env.plannedCalls.isEmpty {
+                    PlannedCallsSection()
+                    Divider()
+                }
                 if rows.isEmpty {
                     ContentUnavailableView(
                         "No sessions yet",
                         systemImage: "waveform",
                         description: Text("Click Record in the menu bar when a call starts."))
                 } else {
-                    TextField("Filter by company", text: $filterText)
-                        .textFieldStyle(.roundedBorder)
-                        .padding(8)
                     if filteredRows.isEmpty {
                         ContentUnavailableView.search(text: filterText)
                     } else {
@@ -44,18 +43,8 @@ struct SessionsView: View {
                                     HStack(spacing: 6) {
                                         Text(row.companyName).bold()
                                         Spacer()
-                                        // Verdict is the headline; the mean rides alongside as a
-                                        // trend signal. Pre-v3 debriefs have no verdict and show
-                                        // the score alone until re-coached.
-                                        if let advancement = row.advancement {
-                                            Text(advancement.displayName)
-                                                .font(.caption).bold()
-                                                .foregroundStyle(Color.forAdvancement(advancement))
-                                        }
-                                        if let score = row.overallScore {
-                                            Text(String(format: "%.1f", score)).monospacedDigit()
-                                                .foregroundStyle(.secondary)
-                                        }
+                                        ScoreBadge(advancement: row.advancement,
+                                                   overallScore: row.overallScore)
                                         // Show the badge whenever coaching isn't complete, not
                                         // just when there's no score: a re-coach that fails on
                                         // an already-complete session leaves the stale feedback
@@ -71,11 +60,13 @@ struct SessionsView: View {
                                 }
                                 .tag(row.session.id!)
                                 .contextMenu {
-                                    Button("Delete", role: .destructive) {
+                                    Button(role: .destructive) {
                                         // If the right-clicked row isn't in the current multi-selection,
                                         // act on just that row (standard Finder behavior).
                                         if !selection.contains(row.session.id!) { selection = [row.session.id!] }
                                         confirmingDelete = true
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
                                     }
                                 }
                             }
@@ -119,11 +110,27 @@ struct SessionsView: View {
         .onAppear {
             reload()
             revealPendingSession()
+            // Owned here, not by PlannedCallsSection: that section renders nothing when the
+            // list is empty, and a view that resolves to no content is exactly the one
+            // SwiftUI may never call `onAppear` on — so the refresh that would populate it
+            // would never run. Same trap `PrefillMenu` documents.
+            env.refreshPlannedCalls()
         }
         // A finalize no longer ends by returning the coordinator to .idle — it ends on its
         // own job, and the next recording may already be running. The completion counter is
         // the signal that a session may have appeared (or failed to).
         .onReceive(env.coordinator.$finalizeCompletions) { _ in reload() }
+        // Replaces a hand-rolled TextField in the sidebar. Same filter, standard place: the
+        // search field belongs in the window's toolbar on macOS, not stacked above the list.
+        .searchable(text: $filterText, prompt: "Filter by company")
+        .toolbar {
+            ToolbarItem {
+                Button { env.planningCall = PlannedCallDraft() } label: {
+                    Label("Plan a call", systemImage: "calendar.badge.plus")
+                }
+                .help("Plan an upcoming interview so its criteria reach the first debrief")
+            }
+        }
     }
 
     private func reload() { rows = (try? env.db.allSessionSummaries()) ?? [] }
@@ -153,11 +160,29 @@ struct SessionsView: View {
     @ViewBuilder
     private func statusBadge(_ status: CoachingStatus) -> some View {
         switch status {
-        case .pending, .running: Text("coaching…").font(.caption2).foregroundStyle(.secondary)
-        case .failed: Text("failed").font(.caption2).foregroundStyle(.red)
+        case .pending: Text("Queued").font(.caption2).foregroundStyle(.secondary)
+        case .running: Text("Writing…").font(.caption2).foregroundStyle(.secondary)
+        case .failed: Text("Failed").font(.caption2).foregroundStyle(.red)
         // Not a shortfall: a transcript-only round is finished when it's transcribed.
-        case .skipped: Text("transcript only").font(.caption2).foregroundStyle(.secondary)
+        case .skipped: Text("Transcript only").font(.caption2).foregroundStyle(.secondary)
         case .complete: EmptyView()
+        }
+    }
+}
+
+extension CoachingStatus {
+    /// What to say where a debrief would be. Product copy, not the raw case name: this sits
+    /// in the reading pane, and "No debrief yet (pending)." leaks a database value at the
+    /// reader without telling them whether to wait, retry, or stop expecting one.
+    var debriefPlaceholder: String {
+        switch self {
+        case .pending: return "Debrief queued…"
+        case .running: return "Writing debrief…"
+        case .failed: return "Debrief failed — retry from Settings"
+        case .skipped: return "Practice round — transcript only"
+        // Unreachable while a complete session has its feedback row, which is the point of
+        // saying something rather than rendering an empty pane if that ever stops holding.
+        case .complete: return "No debrief for this session."
         }
     }
 }
@@ -173,6 +198,10 @@ struct SessionDetailView: View {
     @State private var regenerating = false
     @State private var criteria = ""
     @State private var regenerateError: String?
+    /// Not an error: what to say when `coach()` bailed because another debrief already holds
+    /// this session's claim. Separate from `regenerateError` so it doesn't render in red —
+    /// nothing went wrong, the work is simply someone else's.
+    @State private var regenerateNote: String?
     // Snapshot the selectable round types once per session view. availableRoundTypes() does a
     // directory listing, and debriefPane re-renders on every criteria keystroke — recomputing
     // it per render would list the prompts dir on every keypress.
@@ -217,6 +246,7 @@ struct SessionDetailView: View {
     private func regenerate() {
         regenerating = true
         regenerateError = nil
+        regenerateNote = nil
         Task {
             do {
                 try await env.coaching.coach(sessionId: sessionId)
@@ -225,6 +255,16 @@ struct SessionDetailView: View {
             }
             // Guard the reload: a failed read must not blank out the pane.
             if let fresh = try? env.db.sessionDetail(id: sessionId) { detail = fresh }
+            // `coach()` returns silently when another debrief already holds the session's
+            // claim (a finalize job for this very recording, or a Re-run sweep). The button
+            // would otherwise flip back to "Regenerate" with the OLD debrief still on screen,
+            // reading as "re-ran, nothing changed". The disabled state below hides most of
+            // this, but it is computed from a `detail` loaded on appear — a job that starts
+            // coaching afterwards is invisible to it, so the honest message still has to exist.
+            if regenerateError == nil, detail?.session.coachingStatus == .running {
+                regenerateNote = "A debrief for this session is already being written — "
+                    + "this pane will show it once that finishes."
+            }
             regenerating = false
             onRenamed?()  // refresh the sidebar row's score/advancement/type badge post-coach
         }
@@ -289,7 +329,10 @@ struct SessionDetailView: View {
                     }
                     .labelsHidden()
                     .font(.body)              // don't inherit the title2/bold below
-                    .disabled(regenerating)   // don't switch rubric mid-coach
+                    // Don't switch rubric mid-coach — whether this pane started the coach
+                    // (`regenerating`) or a finalize job / Re-run sweep did (`running`): the
+                    // auto re-coach a type change fires would bail on the other call's claim.
+                    .disabled(regenerating || d.session.coachingStatus == .running)
                 }
                 .font(.title2).bold()
                 if let renameError {
@@ -305,6 +348,9 @@ struct SessionDetailView: View {
                         if let regenerateError {
                             Text(regenerateError).font(.caption).foregroundStyle(.red)
                         }
+                        if let regenerateNote {
+                            Text(regenerateNote).font(.caption).foregroundStyle(.secondary)
+                        }
                         if d.session.coachingStatus == .failed {
                             // Shown even when stale feedback is still present: after a failed
                             // re-coach (e.g. following a round-type change) that feedback was
@@ -318,7 +364,10 @@ struct SessionDetailView: View {
                             Spacer()
                             Button(regenerateButtonTitle(hasFeedback: d.feedback != nil)) {
                                 regenerate()
-                            }.disabled(regenerating)
+                            }
+                            // Also disabled while someone else's debrief holds the claim:
+                            // `coach()` would bail and the click would do nothing at all.
+                            .disabled(regenerating || d.session.coachingStatus == .running)
                         }
                     }
                 }
@@ -326,13 +375,8 @@ struct SessionDetailView: View {
                     if let advancement = f.advancementValue {
                         GroupBox {
                             VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(advancement.displayName).font(.title2).bold()
-                                        .foregroundStyle(Color.forAdvancement(advancement))
-                                    Spacer()
-                                    Text(String(format: "%.1f avg", f.overallScore))
-                                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                                }
+                                ScoreBadge(advancement: advancement,
+                                           overallScore: f.overallScore, style: .prominent)
                                 if !f.advancementRationale.isEmpty {
                                     Text(f.advancementRationale)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -343,10 +387,16 @@ struct SessionDetailView: View {
                     }
                     if !d.tags.isEmpty {
                         HStack {
+                            // Informational tags, not errors: these name what to work on
+                            // next, and a red capsule per tag read as a row of alarms even
+                            // on a Strong Yes. The verdict above is the only thing on this
+                            // pane that gets to carry a colour judgement.
                             ForEach(d.tags, id: \.self) { tag in
-                                Text(tag).font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(.red.opacity(0.15), in: Capsule())
+                                Text(tag).font(.caption).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 8).padding(.vertical, 3)
+                                    .background(.quaternary, in: Capsule())
                             }
+                            Spacer()
                         }
                     }
                     // Above Highlights and the prose: what happens next is the most
@@ -390,8 +440,13 @@ struct SessionDetailView: View {
                             }
                         }
                     }
+                    // The one long-form read in the app. Capped measure and looser leading
+                    // for the same reason any prose gets them: at full pane width on a wide
+                    // display the eye loses the line.
                     Text(LocalizedStringKey(f.proseDebrief))  // renders markdown
                         .textSelection(.enabled)
+                        .lineSpacing(4)
+                        .frame(maxWidth: 680, alignment: .leading)
                     if let items = try? JSONDecoder().decode([String].self,
                                                              from: f.actionItemsJSON.data(using: .utf8)!),
                        !items.isEmpty {
@@ -405,7 +460,8 @@ struct SessionDetailView: View {
                          + "The transcript is on the right.")
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("No debrief yet (\(d.session.coachingStatus.rawValue)).")
+                    Text(d.session.coachingStatus.debriefPlaceholder)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding()

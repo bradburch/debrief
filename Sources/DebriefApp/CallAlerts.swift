@@ -67,8 +67,11 @@ final class CallAlerts: NSObject, CallAlerting, UNUserNotificationCenterDelegate
         center.removePendingNotificationRequests(withIdentifiers: [Self.requestID])
     }
 
-    // Show the banner even though a menu-bar (LSUIElement) app counts as
-    // "foreground" — without this the notification is silently swallowed.
+    // Show the banner even when Debrief is the frontmost app; macOS suppresses a
+    // foreground app's own notifications unless its delegate asks for them here.
+    // Still required now that Debrief is a regular Dock app rather than an
+    // LSUIElement one — the app is frontmost more often, not less, and "call
+    // detected" is precisely the alert you want while staring at the window.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions {
