@@ -5,8 +5,10 @@ import Store
 import Transcriber
 import CoachingEngine
 import CaptureKit
+import os
 
 private let anthropicKeyName = "anthropic-api-key"
+private let logger = Logger(subsystem: "com.debrief.app", category: "environment")
 
 @MainActor
 final class AppEnvironment: ObservableObject {
@@ -23,10 +25,69 @@ final class AppEnvironment: ObservableObject {
     @Published var recordCompany = ""
     @Published var recordRoundType: RoundType = .behavioral
     @Published var recordNotes = ""
+    /// Grading criteria for the interview being recorded, pre-filled from a planned call.
+    /// Cleared with company/notes on stop. It reaches `SessionMetadata`, and through it the
+    /// session row at insert time — which is what puts it in front of the FIRST debrief.
+    @Published var recordCriteria = ""
 
     /// Interviews read from the calendar hand-off file, offered as pre-fills when
     /// starting a recording. Empty is the normal case, not an error.
     @Published var upcoming: [UpcomingInterview] = []
+
+    /// Calls the user planned ahead of time (Store's `plannedCall` table), offered in the
+    /// same pre-fill menu as the calendar entries and shown as a small upcoming list.
+    @Published private(set) var plannedCalls: [PlannedCall] = []
+
+    /// The planned call whose metadata is currently in the stop-form, if any. Consumed at
+    /// stop: the row is deleted only once its finalize has actually produced a session id.
+    /// Not published — nothing renders it, and it must not survive a stop. Readable (not
+    /// writable) inside the module so tests can assert on the claim itself: every way of
+    /// releasing it is invisible from the outside until a stop happens.
+    private(set) var appliedPlannedCallId: Int64?
+
+    /// The "Plan a call" sheet's draft, presented by MainWindow. Lives here rather than as
+    /// view @State because the menu-bar popover opens it too, and a `MenuBarExtra` window
+    /// cannot reliably present a sheet of its own — it opens the main window instead.
+    @Published var planningCall: PlannedCallDraft?
+
+    func refreshPlannedCalls() { plannedCalls = (try? db.plannedCalls()) ?? [] }
+
+    /// Creates or updates a planned call from the sheet's draft, then refreshes the list.
+    ///
+    /// An update that matches no row means the plan was consumed by a finalize while its
+    /// editor was open — which is not rare, since the sheet is modal to the window and a call
+    /// can end at any time. Dropping the edit there would silently discard whatever was just
+    /// typed, so the draft is re-inserted as a new plan instead: a duplicate row is trivially
+    /// deletable, lost typing is not recoverable.
+    func savePlannedCall(_ draft: PlannedCallDraft) {
+        let plan = draft.plannedCall
+        do {
+            if try plan.id == nil || !db.updatePlannedCall(plan) {
+                var fresh = plan
+                fresh.id = nil
+                _ = try db.insertPlannedCall(fresh)
+            }
+        } catch {
+            logger.error("could not save planned call: \(error.localizedDescription, privacy: .public)")
+        }
+        refreshPlannedCalls()
+    }
+
+    func deletePlannedCall(id: Int64) {
+        try? db.deletePlannedCall(id: id)
+        if appliedPlannedCallId == id { appliedPlannedCallId = nil }
+        refreshPlannedCalls()
+    }
+
+    /// Undo for a pre-fill. Applying a plan is otherwise a one-way latch: it arms a rubric
+    /// this interview will be graded on and marks a row for deletion at stop, and until this
+    /// existed the only exit from a mis-click mid-call was to record the wrong plan's
+    /// criteria and lose that plan. Leaves company/round/notes alone — those are visibly
+    /// editable in the form; the criteria and the claim are the invisible half.
+    func clearAppliedPlan() {
+        recordCriteria = ""
+        appliedPlannedCallId = nil
+    }
 
     /// Prefers EventKit (live macOS Calendar, including a synced Google account) over the
     /// `upcoming.json` hand-off, falling back to the file when the calendar isn't
@@ -57,12 +118,39 @@ final class AppEnvironment: ObservableObject {
     func apply(_ item: UpcomingInterview) {
         recordCompany = item.company
         recordNotes = item.notes ?? ""
+        recordCriteria = ""
+        appliedPlannedCallId = nil
         if let raw = item.roundType {
             let candidate = RoundType(rawValue: raw)
             if prompts.availableRoundTypes().contains(candidate) {
                 recordRoundType = candidate
             }
         }
+    }
+
+    /// Pre-fills the stop-form from a planned call, and remembers which plan it came from so
+    /// the row can be consumed once the recording has actually become a session.
+    ///
+    /// Unlike the calendar path this adopts the round type unconditionally: it was picked
+    /// from `availableRoundTypes()` in the sheet, so it is known to have an overlay — and
+    /// keeping a stale one would silently grade the interview on the wrong rubric.
+    func apply(_ plan: PlannedCall) {
+        recordCompany = plan.companyName
+        recordRoundType = plan.roundType
+        recordNotes = Self.contextNotes(role: plan.role, notes: plan.notes)
+        recordCriteria = plan.customInstructions
+        appliedPlannedCallId = plan.id
+    }
+
+    /// Folds the role into the notes the debrief reads, rather than adding a session column
+    /// for it: the LLM needs to know what job the interview was for, and nothing queries it.
+    /// Kept pure and static so both pre-fill surfaces (stop-form and recovery) fold it the
+    /// same way, and so the empty cases are testable without driving SwiftUI.
+    static func contextNotes(role: String, notes: String) -> String {
+        let role = role.trimmingCharacters(in: .whitespacesAndNewlines)
+        let notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !role.isEmpty else { return notes }
+        return notes.isEmpty ? "Role: \(role)" : "Role: \(role) — \(notes)"
     }
 
     // Which tab MainWindow shows. Lives here so a view can navigate to another tab —
@@ -160,7 +248,7 @@ final class AppEnvironment: ObservableObject {
                      symbol: "checkmark.circle.fill", isProblem: false)
     }
 
-    func clearRecordMetadata() { recordCompany = ""; recordNotes = "" }
+    func clearRecordMetadata() { recordCompany = ""; recordNotes = ""; recordCriteria = "" }
 
     /// Single stop path shared by the two Stop buttons and call-end auto-stop.
     ///
@@ -170,9 +258,58 @@ final class AppEnvironment: ObservableObject {
     /// just entered for the new recording.
     func stopAndDebrief() async {
         let name = recordCompany.isEmpty ? "Unknown" : recordCompany
-        let metadata = SessionMetadata(company: name, roundType: recordRoundType, notes: recordNotes)
+        let metadata = SessionMetadata(company: name, roundType: recordRoundType,
+                                       notes: recordNotes, customInstructions: recordCriteria)
+        // Read with the rest of the form and cleared before the await, for the same reason:
+        // the next interview can be started and pre-filled during the stop, and it must not
+        // inherit — or lose — this one's plan.
+        let plannedCallId = appliedPlannedCallId
+        appliedPlannedCallId = nil
         clearRecordMetadata()
-        _ = await coordinator.stopAndFinalize(metadata: metadata)
+        let job = await coordinator.stopAndFinalize(metadata: metadata)
+        consumePlan(plannedCallId, after: job)
+    }
+
+    /// Deletes a planned call once its recording has actually become a session — never
+    /// before. `stopAndFinalize` returning only means the audio is on disk; the finalize
+    /// behind it can still fail (no speech transcribed, and `runFinalize` then deletes the
+    /// session row it had inserted). Consuming the plan at stop would throw away the
+    /// company, round type and grading criteria for a call that still needs recovering.
+    ///
+    /// Runs as a detached follow-up rather than blocking the caller: stopping is deliberately
+    /// non-blocking so the next interview can start while this one is transcribed.
+    /// The job lookup inside `awaitFinalize` is why this Task is started at stop time and not
+    /// later: a *dismissed* job is unknown to the coordinator and reports nil. Dismissal
+    /// requires a finished job and a click, both on the main actor, long after this Task has
+    /// been enqueued — and if it ever did lose the race, the plan is kept, not wrongly eaten.
+    private func consumePlan(_ id: Int64?, after job: UUID?) {
+        guard let id, let job else { return }
+        planConsumptions.append(Task { [weak self] in
+            guard let self, await self.coordinator.awaitFinalize(job) != nil else { return }
+            self.deletePlannedCall(id: id)
+        })
+    }
+
+    /// Every consume follow-up in flight, not just the newest. Kept at all so tests can await
+    /// the *decision*: an assertion that a plan was NOT deleted passes vacuously whenever the
+    /// task simply hasn't run yet.
+    ///
+    /// An array rather than a single `Task?` because finalizes overlap by design — stop
+    /// interview A, start B, stop B. Be aware this is **not** pinned by a test, and can't
+    /// easily be: jobs drain through one serial chain, so consumes resolve in enqueue order
+    /// and awaiting only the newest happens to await the rest as a side effect. That is a
+    /// coincidence of the current queue, not a contract — and the cost of relying on it is a
+    /// plan that is never deleted.
+    private var planConsumptions: [Task<Void, Never>] = []
+
+    /// Drains and awaits them all, re-checking afterwards — a consume that finishes can be
+    /// followed by another appended while we were suspended.
+    func awaitPlanConsumption() async {
+        while !planConsumptions.isEmpty {
+            let pending = planConsumptions
+            planConsumptions = []
+            for task in pending { await task.value }
+        }
     }
 
     /// Single start path shared by the two Record buttons and the notification's
@@ -188,6 +325,7 @@ final class AppEnvironment: ObservableObject {
     /// UI renders the recording state.
     func startRecording() async {
         refreshUpcoming()
+        refreshPlannedCalls()
         alerts?.clear()
         await coordinator.startRecording()
     }
@@ -230,6 +368,7 @@ final class AppEnvironment: ObservableObject {
         // nothing in this process can be coaching yet.
         _ = try? db.resetRunningCoaching()
         refreshRecoverables()
+        refreshPlannedCalls()
         startTimers()
     }
 
@@ -256,9 +395,13 @@ final class AppEnvironment: ObservableObject {
     /// crash) via the coordinator's finalizeFromDisk. Returns once the job is queued and
     /// the directory claimed — the rescan below drops it from the banner immediately, and
     /// the coordinator's completion signal rescans again when the job settles.
-    func recover(_ dir: URL, metadata: SessionMetadata) async {
+    /// `plannedCallId` is set when the recovery prompt was pre-filled from a planned call —
+    /// a crashed session's plan is still in the table, and recovering it consumes the plan on
+    /// exactly the same terms as a live stop does (only if a session id comes back).
+    func recover(_ dir: URL, metadata: SessionMetadata, plannedCallId: Int64? = nil) async {
         let started = RecordingStore.readManifest(in: dir)?.startedAt ?? Date()
-        _ = coordinator.finalizeFromDisk(dir: dir, startedAt: started, metadata: metadata)
+        let job = coordinator.finalizeFromDisk(dir: dir, startedAt: started, metadata: metadata)
+        consumePlan(plannedCallId, after: job)
         refreshRecoverables()
     }
 

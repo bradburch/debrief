@@ -155,6 +155,36 @@ public struct FeedbackRecord: Codable, Equatable, Sendable, FetchableRecord, Mut
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }
 
+/// An interview you have scheduled but not yet recorded, so its metadata — including the
+/// grading criteria — is ready before the call instead of typed in during the goodbyes.
+///
+/// Never a session: see the v6 migration for why a planned call cannot live in the session
+/// table. It is consumed (deleted) only once a finalize has actually produced a session id,
+/// so a call that fails to finalize keeps its plan for the retry.
+public struct PlannedCall: Codable, Identifiable, Equatable, Sendable, FetchableRecord, MutablePersistableRecord {
+    public static let databaseTableName = "plannedCall"
+    public var id: Int64?
+    public var companyName: String
+    /// The role being interviewed for, e.g. "Staff iOS Engineer". Folded into the session's
+    /// context notes at stop time rather than stored on the session — the debrief needs to
+    /// read it, nothing needs to query it.
+    public var role: String
+    public var roundType: RoundType
+    public var scheduledDate: Date
+    public var notes: String
+    /// Per-interview grading criteria, copied into `InterviewSession.customInstructions` when
+    /// the call is recorded, so it reaches the FIRST debrief rather than only a re-coach.
+    public var customInstructions: String
+
+    public init(id: Int64? = nil, companyName: String, role: String = "", roundType: RoundType,
+                scheduledDate: Date, notes: String = "", customInstructions: String = "") {
+        self.id = id; self.companyName = companyName; self.role = role
+        self.roundType = roundType; self.scheduledDate = scheduledDate
+        self.notes = notes; self.customInstructions = customInstructions
+    }
+    public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+}
+
 public struct WeaknessTagRecord: Codable, Equatable, Sendable, FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "weaknessTag"
     public var id: Int64?

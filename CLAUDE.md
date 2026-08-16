@@ -167,6 +167,16 @@ Schema gotcha: the Messages API **rejects `minimum`/`maximum` on integer types**
 
 GRDB with a `DatabaseMigrator` (`AppDatabase.migrator`) — **schema changes go in a new `registerMigration` block, never by editing an existing one.** (`coachingStatus` is a plain TEXT column with no CHECK constraint, so adding a `CoachingStatus` case needs no migration — `skipped` and `running` were both added that way. `skipped` is terminal, unlike `failed`: both coaching sweeps exclude it, or a transcript-only session would be offered for retry forever. `running` is the opposite kind of state — it claims a session for the LLM call in flight, and the claim is only real because `coach()` **returns early** when it finds the session already `running`, so a second caller neither bills a call nor races to write the same feedback row. It is explicitly **not** terminal: `sessionsNeedingCoaching` skips it, a cancelled coach puts the previous status back (never `running`), and `AppEnvironment.init` sweeps `running → pending` at launch for the process that died holding it. `sessionsWithTranscript` is deliberately untouched by all of this — it serves `exportAll` too.) In-memory DB for tests (`AppDatabase.inMemory()`), on-disk for the app. LLM feedback (scores, highlights, action items, process notes) is stored as JSON strings in columns; weakness tags are a separate indexed table for trend queries.
 
+**Planned calls are their own table (`plannedCall`, migration v6), never a session in a
+"planned" state** — a session row is born at *finalize*, so a planned session would show as a
+zero-minute row in Sessions/Pipeline/Trends and `runFinalize`'s orphan compensation would
+delete it outright on a no-speech call. A plan carries the company, role, round type, notes and
+grading criteria, which `SessionMetadata.customInstructions` puts on the session row at insert
+time — that is what gets pre-entered criteria into the **first** debrief instead of only a
+re-coach. `AppEnvironment.consumePlan` deletes the row only once a finalize has returned a
+session id, so a failed finalize keeps the plan for the recovery prompt (which offers the same
+pre-fill menu).
+
 `insertSegments` runs `TranscriptArtifacts.clean` on every write, so the transcript table holds
 speech and nothing else. WhisperKit narrates non-speech as `[BLANK_AUDIO]`, `[ Silence ]`,
 `(indistinct)`, and emits `>>` speaker-change markers and half-cut brackets at chunk

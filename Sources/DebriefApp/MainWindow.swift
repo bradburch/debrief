@@ -57,6 +57,12 @@ struct MainWindow: View {
             }
         }
         .frame(minWidth: 900, minHeight: 560)
+        // Presented here, not in the views that open it: the menu-bar popover is a
+        // MenuBarExtra window and can't reliably present a sheet of its own, so its
+        // "Plan a call" opens this window and sets the same draft.
+        .sheet(item: $env.planningCall) { draft in
+            PlannedCallEditor(draft: draft)
+        }
     }
 }
 

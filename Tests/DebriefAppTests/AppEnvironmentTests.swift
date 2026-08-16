@@ -1,9 +1,11 @@
 import XCTest
+import AVFoundation
 import Combine
 @testable import DebriefApp
 import CaptureKit
 import Store
 import CoachingEngine
+import Transcriber
 
 // Regression test for the nested-ObservableObject gap: AppEnvironment wraps a
 // `coordinator: RecordingCoordinator` (a plain `let`, not @Published), so
@@ -21,6 +23,7 @@ final class FakeAlerts: CallAlerting {
 final class AppEnvironmentTests: XCTestCase {
     /// Coordinator + env built exactly the way RecordingCoordinatorTests.makeCoordinator does.
     func makeEnv(db: AppDatabase, alerts: CallAlerting? = nil, root: URL? = nil,
+                 transcriber: Transcribing = FakeTranscriber(textForChunk: "final"),
                  plan: RecorderPlan = RecorderPlan()) throws -> AppEnvironment {
         let root = try root ?? makeRoot()
         let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -30,13 +33,31 @@ final class AppEnvironmentTests: XCTestCase {
         let coordinator = RecordingCoordinator(
             db: db,
             coaching: coaching,
-            transcriber: FakeTranscriber(textForChunk: "final"),
+            transcriber: transcriber,
             makeMicRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, stopGate: plan.stopGate) },
             makeSystemRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, stopGate: plan.stopGate) },
             recordingsRoot: root,
             chunkDuration: 1.0)
         return AppEnvironment(db: db, prompts: prompts, coaching: coaching, coordinator: coordinator,
                               alerts: alerts, recordingsRoot: root)
+    }
+
+    /// An orphaned session directory with one chunk on each stream — what a crash leaves
+    /// behind. Same shape RecoveryTests seeds.
+    func seedOrphanDir(root: URL) throws -> URL {
+        let dir = try RecordingStore.createSessionDirectory(root: root)
+        try RecordingStore.writeManifest(.init(startedAt: Date(timeIntervalSinceNow: -300),
+                                               finalized: false), in: dir)
+        let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
+                                channels: 1, interleaved: false)!
+        for prefix in ["mic", "sys"] {
+            let writer = try WavChunkWriter(directory: dir, prefix: prefix, chunkDuration: 1.0)
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 16_000)!
+            buf.frameLength = 16_000
+            try writer.append(buf)
+            try writer.finish()
+        }
+        return dir
     }
 
     func makeRoot() throws -> URL {
@@ -279,6 +300,287 @@ final class AppEnvironmentTests: XCTestCase {
 
         let after = try XCTUnwrap(db.sessionDetail(id: id))
         XCTAssertEqual(after.session.coachingStatus, .pending)
+    }
+
+    /// The point of planning a call: everything typed in beforehand — round type, notes,
+    /// role, and the grading criteria — is on the session row the finalize inserts, so it
+    /// reaches the first debrief instead of only a re-coach.
+    func testPlannedCallPreFillsTheStopFormAndReachesTheSession() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", role: "Staff iOS",
+                                                  roundType: .technical, scheduledDate: Date(),
+                                                  notes: "panel of two",
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        env.apply(plan)
+        XCTAssertEqual(env.recordCompany, "Acme")
+        XCTAssertEqual(env.recordRoundType, .technical)
+        XCTAssertEqual(env.recordCriteria, "GRADE_MARKER_XYZ")
+        // The role has no session column; it is folded into the notes the debrief reads.
+        XCTAssertEqual(env.recordNotes, "Role: Staff iOS — panel of two")
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+
+        let summaries = try db.allSessionSummaries()
+        XCTAssertEqual(summaries.count, 1)
+        let session = try XCTUnwrap(summaries.first?.session)
+        XCTAssertEqual(summaries.first?.companyName, "Acme")
+        XCTAssertEqual(session.roundType, .technical)
+        XCTAssertEqual(session.customInstructions, "GRADE_MARKER_XYZ")
+        XCTAssertEqual(session.contextNotes, "Role: Staff iOS — panel of two")
+        // Consumed once the finalize produced a session, and the form left clean.
+        await env.awaitPlanConsumption()
+        XCTAssertTrue(env.plannedCalls.isEmpty, "the recorded plan was never consumed")
+        XCTAssertEqual(try db.plannedCalls().count, 0)
+        XCTAssertEqual(env.recordCriteria, "")
+    }
+
+    /// A finalize that fails deletes the session row it had inserted and keeps the audio for
+    /// recovery — so the plan has to survive too. Consuming it at stop would throw away the
+    /// company, round type and criteria of a call that still needs recovering.
+    func testFailedFinalizeKeepsThePlannedCallForTheRecovery() async throws {
+        let db = try AppDatabase.inMemory()
+        let root = try makeRoot()
+        // Every transcription throws -> no segments -> the finalize fails after inserting
+        // the session row, then compensates it away.
+        let env = try makeEnv(db: db, root: root, transcriber: ThrowingTranscriber())
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+        env.apply(plan)
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+        // Await the consume follow-up's *decision*, not a yield count: asserting an absence
+        // behind a bounded wait passes for free whenever the task simply hasn't run.
+        await env.awaitPlanConsumption()
+
+        XCTAssertTrue(try db.allSessionSummaries().isEmpty, "the orphaned session row must be gone")
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [plan.id],
+                       "a failed finalize consumed the plan, losing the criteria for the retry")
+        XCTAssertFalse(env.recoverableSessions.isEmpty, "the audio must still be recoverable")
+    }
+
+    /// Recovering a crashed planned call consumes its plan on exactly the same terms as a
+    /// live stop: only because a session came back. The failing half of this is covered
+    /// above; this is the half that can silently stop working, since `recover` not passing
+    /// the plan through at all looks identical to a finalize that failed.
+    func testRecoveringACrashedPlannedCallConsumesItsPlan() async throws {
+        let db = try AppDatabase.inMemory()
+        let root = try makeRoot()
+        let env = try makeEnv(db: db, root: root)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", role: "Staff iOS",
+                                                  roundType: .technical, scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        // A directory a crashed launch left behind, with audio on both streams.
+        let dir = try seedOrphanDir(root: root)
+        env.refreshRecoverables()
+        XCTAssertEqual(env.recoverableSessions, [dir])
+
+        env.apply(plan)
+        await env.recover(dir, metadata: .init(company: env.recordCompany, roundType: env.recordRoundType,
+                                               notes: env.recordNotes,
+                                               customInstructions: env.recordCriteria),
+                          plannedCallId: plan.id)
+        await env.coordinator.awaitAllFinalizes()
+        await env.awaitPlanConsumption()
+
+        let summaries = try db.allSessionSummaries()
+        XCTAssertEqual(summaries.count, 1)
+        let recovered = try XCTUnwrap(summaries.first?.session)
+        XCTAssertEqual(recovered.customInstructions, "GRADE_MARKER_XYZ",
+                       "a recovered planned call lost its grading criteria")
+        XCTAssertEqual(recovered.contextNotes, "Role: Staff iOS")
+        XCTAssertTrue(try db.plannedCalls().isEmpty, "a recovered plan must be consumed too")
+    }
+
+    /// Changing your mind: apply a plan, then pick a calendar entry instead. The calendar
+    /// path has to drop both the criteria and the remembered plan, or the session is graded
+    /// on a rubric written for a different interview *and* that interview's plan is deleted
+    /// for a call it never covered.
+    func testApplyingACalendarEntryAfterAPlanDropsThePlansCriteriaAndClaim() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", role: "Staff iOS",
+                                                  roundType: .technical, scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        env.apply(plan)
+        env.apply(UpcomingInterview(company: "Globex", roundType: "behavioral",
+                                    start: Date(), notes: "phone screen"))
+        XCTAssertEqual(env.recordCompany, "Globex")
+        XCTAssertEqual(env.recordCriteria, "", "the abandoned plan's rubric is still armed")
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+        await env.awaitPlanConsumption()
+
+        let session = try XCTUnwrap(try db.allSessionSummaries().first?.session)
+        XCTAssertEqual(session.customInstructions, "",
+                       "Globex was graded on the rubric written for the Acme interview")
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [plan.id],
+                       "recording a different interview consumed the Acme plan")
+    }
+
+    /// The headline of the concurrency work, applied to plans: stop A, start B, stop B. Each
+    /// session must carry the criteria of the plan *it* was recorded under, and each plan is
+    /// consumed by its own finalize — a single shared "applied plan" or a single consume task
+    /// crosses them, and the symptom is one interview graded on another's rubric.
+    func testOverlappingRecordingsEachKeepTheirOwnPlanAndCriteria() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let planP = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                   scheduledDate: Date(), customInstructions: "CRITERIA_P"))
+        let planQ = try db.insertPlannedCall(.init(companyName: "Globex", roundType: .behavioral,
+                                                   scheduledDate: Date(), customInstructions: "CRITERIA_Q"))
+        env.refreshPlannedCalls()
+
+        env.apply(planP)
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()          // deliberately NOT awaited to completion
+
+        // B starts while A is still finalizing — the whole point of the job queue.
+        await env.coordinator.startRecording()
+        env.apply(planQ)
+        await env.stopAndDebrief()
+
+        await env.coordinator.awaitAllFinalizes()
+        await env.awaitPlanConsumption()
+
+        let rows = try db.allSessionSummaries()
+        XCTAssertEqual(rows.count, 2)
+        let acme = try XCTUnwrap(rows.first { $0.companyName == "Acme" }?.session)
+        let globex = try XCTUnwrap(rows.first { $0.companyName == "Globex" }?.session)
+        XCTAssertEqual(acme.customInstructions, "CRITERIA_P", "session A was graded on B's rubric")
+        XCTAssertEqual(globex.customInstructions, "CRITERIA_Q", "session B was graded on A's rubric")
+        XCTAssertEqual(acme.roundType, .technical)
+        XCTAssertEqual(globex.roundType, .behavioral)
+        let leftover = try db.plannedCalls()
+        XCTAssertTrue(leftover.isEmpty,
+                      "both plans were recorded; a consume follow-up was dropped: \(leftover.map(\.companyName))")
+    }
+
+    /// Applying a plan arms a rubric and marks a row for deletion. Both halves are invisible
+    /// in the form, so a mis-click mid-call needs an undo that releases the claim as well as
+    /// the criteria — otherwise the wrong plan is deleted when this interview stops.
+    func testDismissingTheAppliedCriteriaReleasesThePlanClaimToo() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        env.apply(plan)
+        XCTAssertEqual(env.appliedPlannedCallId, plan.id)
+        env.clearAppliedPlan()
+        XCTAssertEqual(env.recordCriteria, "")
+        XCTAssertNil(env.appliedPlannedCallId)
+        // Company/round/notes are visibly editable, so they are deliberately left alone.
+        XCTAssertEqual(env.recordCompany, "Acme")
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+        await env.awaitPlanConsumption()
+
+        XCTAssertEqual(try XCTUnwrap(db.allSessionSummaries().first?.session).customInstructions, "",
+                       "the dismissed rubric was still applied to the recording")
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [plan.id],
+                       "the dismissed plan was consumed by a recording that didn't use it")
+    }
+
+    /// Deleting the plan that is currently pre-filled has to release the claim: the row is
+    /// gone, and a claim on a dead id is a delete aimed at whatever comes to occupy it.
+    func testDeletingTheAppliedPlanReleasesTheClaim() throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(), customInstructions: "X"))
+        env.refreshPlannedCalls()
+        env.apply(plan)
+        XCTAssertEqual(env.appliedPlannedCallId, plan.id)
+
+        env.deletePlannedCall(id: try XCTUnwrap(plan.id))
+        XCTAssertNil(env.appliedPlannedCallId, "a claim survived the row it pointed at")
+    }
+
+    /// The sheet is modal to the window, and the call it plans can end — consuming the row —
+    /// while it is open. Saving then updates nothing, and the typing is gone. Re-insert it
+    /// instead: a duplicate row is one right-click away, lost typing isn't recoverable.
+    func testSavingAnEditToAConsumedPlanKeepsTheTypingAsANewPlan() throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(timeIntervalSinceNow: 3_600)))
+        env.refreshPlannedCalls()
+
+        var draft = PlannedCallDraft(plan)
+        draft.customInstructions = "Grade on API design."
+        try db.deletePlannedCall(id: XCTUnwrap(plan.id))   // the call ran and finalized meanwhile
+        env.savePlannedCall(draft)
+
+        let saved = try XCTUnwrap(env.plannedCalls.first)
+        XCTAssertEqual(env.plannedCalls.count, 1)
+        XCTAssertEqual(saved.customInstructions, "Grade on API design.", "the edit was silently discarded")
+        XCTAssertNotEqual(saved.id, plan.id, "the consumed row cannot be resurrected under its old id")
+    }
+
+    /// Whitespace-only criteria must not survive to the row: `assembleSystemPrompt` trims
+    /// them away and appends nothing, so storing them would light the "criteria applied"
+    /// badge over a rubric the debrief never sees.
+    func testPlannedCallDraftTrimsEveryFieldOnItsWayToTheRow() {
+        var draft = PlannedCallDraft()
+        draft.companyName = "  Acme  "
+        draft.role = "  Staff iOS\n"
+        draft.notes = "  panel of two  "
+        draft.customInstructions = "   \n  "
+        let plan = draft.plannedCall
+        XCTAssertEqual(plan.companyName, "Acme")
+        XCTAssertEqual(plan.role, "Staff iOS")
+        XCTAssertEqual(plan.notes, "panel of two")
+        XCTAssertEqual(plan.customInstructions, "")
+        XCTAssertFalse(PlannedCallDraft().isValid, "a plan with no company can't pre-fill anything")
+    }
+
+    func testContextNotesFoldsTheRoleInWithoutInventingSeparators() {
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "Staff iOS", notes: "panel of two"),
+                       "Role: Staff iOS — panel of two")
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "Staff iOS", notes: ""), "Role: Staff iOS")
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "  ", notes: "panel of two"), "panel of two")
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "", notes: ""), "")
+    }
+
+    /// Editing and deleting go through the environment so the published list stays in step
+    /// with the table — a stale list would keep offering a plan that no longer exists.
+    func testPlannedCallEditsAndDeletesRepublishTheList() throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+
+        var draft = PlannedCallDraft()
+        draft.companyName = "Acme"
+        draft.roundType = .behavioral
+        env.savePlannedCall(draft)
+        XCTAssertEqual(env.plannedCalls.map(\.companyName), ["Acme"])
+
+        var edit = PlannedCallDraft(try XCTUnwrap(env.plannedCalls.first))
+        edit.companyName = "Acme Corp"
+        env.savePlannedCall(edit)
+        XCTAssertEqual(env.plannedCalls.map(\.companyName), ["Acme Corp"])
+        XCTAssertEqual(env.plannedCalls.count, 1, "editing a plan must update it, not add a second")
+
+        env.deletePlannedCall(id: try XCTUnwrap(env.plannedCalls.first?.id))
+        XCTAssertTrue(env.plannedCalls.isEmpty)
     }
 
     func testCallStartWhileRecordingDoesNotPostAlert() async throws {

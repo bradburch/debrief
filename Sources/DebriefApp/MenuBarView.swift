@@ -19,16 +19,7 @@ struct MenuBarView: View {
                 FinalizeJobsSection()
             }
             Divider()
-            Button("Open Debrief") {
-                openWindow(id: "main")
-                // ponytail: openWindow() creates the NSWindow asynchronously; activating
-                // immediately races it and leaves the window unfocused (LSUIElement apps
-                // don't get key status for free). Defer a tick so the window exists first.
-                DispatchQueue.main.async {
-                    NSApp.activate(ignoringOtherApps: true)
-                    NSApp.windows.first { $0.identifier?.rawValue == "main" }?.makeKeyAndOrderFront(nil)
-                }
-            }
+            Button("Open Debrief") { openMainWindow() }
             // Routed through applicationShouldTerminate (see AppDelegate), which is what
             // asks before abandoning an unfinished debrief.
             Button("Quit") { NSApp.terminate(nil) }
@@ -57,6 +48,29 @@ struct MenuBarView: View {
         } label: {
             Label(env.callDetected ? "Record this call" : "Start recording",
                   systemImage: "record.circle")
+        }
+        // The sheet itself is presented by MainWindow: a MenuBarExtra window can't present
+        // one, so this sets the draft and brings up the window that can.
+        Button {
+            env.planningCall = PlannedCallDraft()
+            openMainWindow()
+        } label: {
+            Label("Plan a call…", systemImage: "calendar.badge.plus")
+        }
+        if !env.plannedCalls.isEmpty {
+            Text("\(env.plannedCalls.count) planned call\(env.plannedCalls.count == 1 ? "" : "s") — pre-fill from the form after you start.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func openMainWindow() {
+        openWindow(id: "main")
+        // ponytail: openWindow() creates the NSWindow asynchronously; activating
+        // immediately races it and leaves the window unfocused (LSUIElement apps
+        // don't get key status for free). Defer a tick so the window exists first.
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first { $0.identifier?.rawValue == "main" }?.makeKeyAndOrderFront(nil)
         }
     }
 

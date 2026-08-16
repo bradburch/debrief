@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import Store
 
 final class StoreTests: XCTestCase {
@@ -283,6 +284,111 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try db.resetRunningCoaching(), 1)
         XCTAssertEqual(try db.sessionDetail(id: running)?.session.coachingStatus, .pending)
         XCTAssertEqual(Set(try db.sessionsNeedingCoaching().map(\.id)), [running, pending])
+    }
+
+    func testPlannedCallsRoundTripAndComeBackSoonestFirst() throws {
+        let later = try db.insertPlannedCall(.init(companyName: "Globex", role: "Staff iOS",
+                                                   roundType: .technical,
+                                                   scheduledDate: Date(timeIntervalSinceNow: 7_200),
+                                                   notes: "panel of two",
+                                                   customInstructions: "Grade on API design."))
+        let sooner = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .behavioral,
+                                                    scheduledDate: Date(timeIntervalSinceNow: 3_600)))
+
+        let all = try db.plannedCalls()
+        XCTAssertEqual(all.map(\.id), [sooner.id, later.id], "planned calls must come back soonest first")
+        let stored = try XCTUnwrap(all.last)
+        XCTAssertEqual(stored.companyName, "Globex")
+        XCTAssertEqual(stored.role, "Staff iOS")
+        XCTAssertEqual(stored.roundType, .technical)
+        // Read the raw column, not just the round-trip: encode and decode are symmetric, so a
+        // RoundType stored as {"rawValue":"technical"} would round-trip fine here and then
+        // blank every Picker that binds by tag.
+        let rawRoundType = try db.dbWriter.read { db in
+            try String.fetchOne(db, sql: "SELECT roundType FROM plannedCall WHERE id = ?",
+                                arguments: [stored.id])
+        }
+        XCTAssertEqual(rawRoundType, "technical")
+        XCTAssertEqual(stored.notes, "panel of two")
+        XCTAssertEqual(stored.customInstructions, "Grade on API design.")
+        // The defaulted columns, which the record's own defaults also cover.
+        XCTAssertEqual(all.first?.role, "")
+        XCTAssertEqual(all.first?.notes, "")
+        XCTAssertEqual(all.first?.customInstructions, "")
+
+        var edited = stored
+        edited.companyName = "Globex Inc"
+        edited.roundType = .systemDesign
+        edited.customInstructions = "Grade on scalability."
+        try db.updatePlannedCall(edited)
+        let after = try XCTUnwrap(db.plannedCalls().last)
+        XCTAssertEqual(after.companyName, "Globex Inc")
+        XCTAssertEqual(after.roundType, .systemDesign)
+        XCTAssertEqual(after.customInstructions, "Grade on scalability.")
+
+        try db.deletePlannedCall(id: XCTUnwrap(sooner.id))
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [later.id])
+        // Editing a plan that a finalize already consumed is a no-op, not a throw.
+        XCTAssertNoThrow(try db.updatePlannedCall(sooner))
+    }
+
+    /// A plan is consumed only by a *successful* finalize, so the ones you never recorded
+    /// accumulate — and ascending order parks the oldest of them at the top of the sidebar
+    /// list and the pre-fill menu. The window is a filter, not a purge: the 24h grace keeps
+    /// an interview that ran late (or whose finalize failed overnight) available the next
+    /// morning, which is exactly when the recovery prompt needs it.
+    func testPlannedCallsDropStaleEntriesButKeepTheOvernightGrace() throws {
+        let now = Date()
+        let lastWeek = try db.insertPlannedCall(.init(companyName: "Stale", roundType: .behavioral,
+                                                      scheduledDate: now.addingTimeInterval(-7 * 86_400)))
+        let anHourAgo = try db.insertPlannedCall(.init(companyName: "RanLate", roundType: .behavioral,
+                                                       scheduledDate: now.addingTimeInterval(-3_600)))
+        let tomorrow = try db.insertPlannedCall(.init(companyName: "Upcoming", roundType: .behavioral,
+                                                      scheduledDate: now.addingTimeInterval(86_400)))
+
+        let offered = try db.plannedCalls(now: now)
+        XCTAssertEqual(offered.map(\.id), [anHourAgo.id, tomorrow.id],
+                       "a week-old plan is still at the top of every pre-fill menu")
+        XCTAssertFalse(offered.contains { $0.id == lastWeek.id })
+        // Filtered, not purged — the row is still there to be deleted or re-dated.
+        XCTAssertEqual(try db.plannedCalls(now: now.addingTimeInterval(-7 * 86_400)).count, 3)
+
+        // And the list is bounded, so a runaway backlog can't fill the sidebar.
+        for i in 0..<25 {
+            _ = try db.insertPlannedCall(.init(companyName: "Bulk\(i)", roundType: .behavioral,
+                                               scheduledDate: now.addingTimeInterval(Double(i) * 60)))
+        }
+        XCTAssertEqual(try db.plannedCalls(now: now).count, 20)
+    }
+
+    /// The row can vanish under an open editor: the sheet is modal to the window, and the
+    /// call it plans can finish (and consume it) at any moment. Silently dropping the typing
+    /// is the one outcome that isn't recoverable — a duplicate row is one right-click away.
+    func testUpdatingAConsumedPlanReportsTheMissingRowRatherThanFailingQuietly() throws {
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .behavioral,
+                                                  scheduledDate: Date(timeIntervalSinceNow: 3_600)))
+        var edited = plan
+        edited.companyName = "Acme Corp"
+        XCTAssertTrue(try db.updatePlannedCall(edited), "an existing row must report as updated")
+
+        try db.deletePlannedCall(id: XCTUnwrap(plan.id))
+        XCTAssertFalse(try db.updatePlannedCall(edited), "a consumed row must report as missing")
+        XCTAssertFalse(try db.updatePlannedCall(.init(companyName: "New", roundType: .behavioral,
+                                                      scheduledDate: Date())),
+                       "a plan with no id was never in the table")
+    }
+
+    /// Planned calls are not sessions, and every session-shaped query has to keep agreeing:
+    /// one showing up in Sessions, Pipeline or Trends would be a zero-minute phantom round.
+    func testPlannedCallsAreInvisibleToEverySessionQuery() throws {
+        _ = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .behavioral,
+                                           scheduledDate: Date()))
+        XCTAssertTrue(try db.allSessionSummaries().isEmpty)
+        XCTAssertTrue(try db.pipeline().isEmpty, "a planned call must not create a company either")
+        XCTAssertTrue(try db.scoresByDate(roundType: nil).isEmpty)
+        XCTAssertTrue(try db.sessionsNeedingCoaching().isEmpty)
+        XCTAssertTrue(try db.sessionsWithTranscript().isEmpty)
+        XCTAssertEqual(try db.sessionCount(forRoundType: .behavioral), 0)
     }
 
     func testCustomInstructionsDefaultsEmptyAndRoundTrips() throws {
