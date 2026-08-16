@@ -35,7 +35,8 @@ final class AppEnvironmentTests: XCTestCase {
             makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 2) },
             recordingsRoot: root,
             chunkDuration: 1.0)
-        return AppEnvironment(db: db, prompts: prompts, coaching: coaching, coordinator: coordinator, alerts: alerts)
+        return AppEnvironment(db: db, prompts: prompts, coaching: coaching, coordinator: coordinator,
+                              alerts: alerts, recordingsRoot: root)
     }
 
     func testCoordinatorPhaseChangeForwardsToEnvironmentObjectWillChange() async throws {
@@ -68,16 +69,18 @@ final class AppEnvironmentTests: XCTestCase {
 
         // Mic freed: first poll arms the 10s confirmation window — still recording.
         await env.pollDetection(.init(micInUse: false, meetingAppRunning: true), at: t0.addingTimeInterval(60))
-        guard case .recording = env.coordinator.phase else {
+        guard case .recording = env.coordinator.recordingPhase else {
             return XCTFail("should still be recording inside the confirmation window")
         }
 
-        // Confirmation elapsed → call ended → recording auto-stops and finalizes.
+        // Confirmation elapsed → call ended → recording auto-stops and queues the debrief.
         await env.pollDetection(.init(micInUse: false, meetingAppRunning: true), at: t0.addingTimeInterval(71))
         XCTAssertFalse(env.callDetected)
-        guard case .idle = env.coordinator.phase else {
-            return XCTFail("call end should stop and finalize the recording, got \(env.coordinator.phase)")
+        guard case .idle = env.coordinator.recordingPhase else {
+            return XCTFail("call end should stop the recording, got \(env.coordinator.recordingPhase)")
         }
+        // The session lands when its finalize job does — auto-stop no longer waits for it.
+        await env.coordinator.awaitAllFinalizes()
         let sessions = try db.allSessionSummaries()
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(sessions.first?.companyName, "Acme")
@@ -130,9 +133,42 @@ final class AppEnvironmentTests: XCTestCase {
 
         await env.startRecording()
         XCTAssertEqual(alerts.clearCount, 1, "starting a recording should clear the call-detected notification")
-        guard case .recording = env.coordinator.phase else {
-            return XCTFail("startRecording() should start the coordinator, got \(env.coordinator.phase)")
+        guard case .recording = env.coordinator.recordingPhase else {
+            return XCTFail("startRecording() should start the coordinator, got \(env.coordinator.recordingPhase)")
         }
+    }
+
+    /// A call starting while an earlier session is still being debriefed now alerts, because
+    /// the new session is recordable. The old single-phase check suppressed it, and the
+    /// detector never re-fired once finalize ended.
+    func testCallStartDuringFinalizeStillPostsAlert() async throws {
+        let db = try AppDatabase.inMemory()
+        let alerts = FakeAlerts()
+        let env = try makeEnv(db: db, alerts: alerts)
+
+        await env.coordinator.startRecording()
+        _ = await env.coordinator.stopAndFinalize(metadata: .init(company: "Acme", roundType: .behavioral, notes: ""))
+        XCTAssertTrue(env.coordinator.hasActiveJobs)
+
+        await env.pollDetection(.init(micInUse: true, meetingAppRunning: true), at: Date())
+        XCTAssertEqual(alerts.detectedCount, 1, "a call detected during a finalize must still be offered")
+        await env.coordinator.awaitAllFinalizes()
+    }
+
+    /// `running` is not terminal: a process that dies mid-coach leaves the row in a state
+    /// every sweep skips, so launch has to hand it back to the retry paths.
+    func testLaunchResetsRunningCoachingToPending() async throws {
+        let db = try AppDatabase.inMemory()
+        let company = try db.fetchOrCreateCompany(named: "Acme")
+        let session = try db.insertSession(InterviewSession(
+            id: nil, companyId: company.id!, roundType: .behavioral, date: Date(),
+            durationSeconds: 60, contextNotes: "", coachingStatus: .running))
+        let id = try XCTUnwrap(session.id)
+
+        _ = try makeEnv(db: db)  // launch-time work runs in AppEnvironment.init
+
+        let after = try XCTUnwrap(db.sessionDetail(id: id))
+        XCTAssertEqual(after.session.coachingStatus, .pending)
     }
 
     func testCallStartWhileRecordingDoesNotPostAlert() async throws {
@@ -145,5 +181,6 @@ final class AppEnvironmentTests: XCTestCase {
 
         XCTAssertTrue(env.callDetected)
         XCTAssertEqual(alerts.detectedCount, 0, "no Record pop-up while already recording")
+        _ = await env.coordinator.stopAndAwait(metadata: .init(company: "X", roundType: .behavioral, notes: ""))
     }
 }

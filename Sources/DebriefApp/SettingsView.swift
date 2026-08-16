@@ -45,8 +45,11 @@ struct SettingsView: View {
     // writing (mid-recording finalize, or a background coach/recoachAll call) during that
     // window, the tail of the write can be lost or corrupted. Only allow starting a
     // relocation when nothing can be writing to the DB.
+    /// A *finished* job writes nothing, so this gates on jobs still in flight rather than on
+    /// the list being empty — otherwise an undismissed success would block relocation.
     private var canRelocate: Bool {
-        if case .idle = env.coordinator.phase, !env.isRecoaching { return true }
+        if case .idle = env.coordinator.recordingPhase,
+           !env.coordinator.hasActiveJobs, !env.isRecoaching { return true }
         return false
     }
 
@@ -127,11 +130,19 @@ struct SettingsView: View {
                 Text("Takes effect after relaunching Debrief.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Coaching") {
+                // Disabled while a finalize job is running: that job's own debrief is part of
+                // what "pending" means until it lands, and a sweep started now would report a
+                // confusing count for work already in flight.
                 Button("Retry pending debriefs") {
                     Task {
                         let errors = await env.coaching.retryAllPending()
                         retryResult = errors.isEmpty ? "All caught up." : "\(errors.count) failed — see sessions list."
                     }
+                }
+                .disabled(env.coordinator.hasActiveJobs)
+                if env.coordinator.hasActiveJobs {
+                    Text("Finishing a debrief — try again in a moment.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if let retryResult { Text(retryResult).font(.caption) }
                 HStack {

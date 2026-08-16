@@ -115,7 +115,10 @@ struct SessionsView: View {
             reload()
             revealPendingSession()
         }
-        .onReceive(env.coordinator.$phase) { if case .idle = $0 { reload() } }
+        // A finalize no longer ends by returning the coordinator to .idle — it ends on its
+        // own job, and the next recording may already be running. The completion counter is
+        // the signal that a session may have appeared (or failed to).
+        .onReceive(env.coordinator.$finalizeCompletions) { _ in reload() }
     }
 
     private func reload() { rows = (try? env.db.allSessionSummaries()) ?? [] }
