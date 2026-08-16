@@ -28,7 +28,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
          to hear Continuity/cellular call audio (see checklist #16). Keep in sync with
          `platforms:` in Package.swift. -->
     <key>LSMinimumSystemVersion</key><string>14.2</string>
-    <key>LSUIElement</key><true/>
+    <!-- Deliberately NO LSUIElement: Debrief is a regular Dock app that ALSO lives in the
+         menu bar. Adding it back hides the Dock icon and, less obviously, takes away the
+         app's ability to become key on its own — see AppDelegate.focusMainWindow and
+         MenuBarView.openMainWindow, which relied on activate(ignoringOtherApps:) to work
+         around exactly that. -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Debrief records your side of interview calls to transcribe and coach you.</string>
     <!-- SystemAudioRecorder captures the other participants with a CoreAudio process

@@ -36,6 +36,7 @@ struct MainWindow: View {
     // Tab selection lives on AppEnvironment so other views can navigate here (Pipeline →
     // a session). Was @State; nothing else could reach it.
     @EnvironmentObject var env: AppEnvironment
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         NavigationSplitView {
@@ -57,6 +58,10 @@ struct MainWindow: View {
             }
         }
         .frame(minWidth: 900, minHeight: 560)
+        .background(WindowFrameAutosave(name: "DebriefMainWindow"))
+        // Armed from launch, since the Window scene now opens at launch (no LSUIElement).
+        // AppDelegate needs this to answer a Dock click after the window was closed.
+        .onAppear { AppDelegate.openMainWindow = { openWindow(id: "main") } }
         // Presented here, not in the views that open it: the menu-bar popover is a
         // MenuBarExtra window and can't reliably present a sheet of its own, so its
         // "Plan a call" opens this window and sets the same draft.
@@ -64,6 +69,29 @@ struct MainWindow: View {
             PlannedCallEditor(draft: draft)
         }
     }
+}
+
+/// Persists the main window's size and position across launches.
+///
+/// SwiftUI's `Window` scene offers `.defaultSize`, which is only a *default* — resize the
+/// window and the next launch throws the change away. AppKit has had frame autosave forever,
+/// so reach through to the NSWindow and use it. Naming the autosave only arms the automatic
+/// *save*; the matching `setFrameUsingName` is what performs the restore.
+private struct WindowFrameAutosave: NSViewRepresentable {
+    let name: String
+
+    func makeNSView(context: Context) -> NSView {
+        let probe = NSView()
+        // `probe.window` is nil until the view is in a window, which happens after make.
+        DispatchQueue.main.async {
+            guard let window = probe.window, window.frameAutosaveName != name else { return }
+            window.setFrameAutosaveName(name)
+            window.setFrameUsingName(name)
+        }
+        return probe
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 /// A re-run takes ~30s per session and outlives the Settings tab, so its progress is shown
