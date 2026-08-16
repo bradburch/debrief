@@ -122,11 +122,16 @@ extension AppDatabase {
         return cleaned.count
     }
 
-    /// Cheap existence probe, used by crash recovery: a leftover directory whose manifest
-    /// already names a session row was finalized far enough for the transcript to land, and
-    /// recovering it again would insert the same interview twice.
-    public func sessionExists(id: Int64) throws -> Bool {
-        try dbWriter.read { db in try InterviewSession.filter(key: id).fetchCount(db) > 0 }
+    /// Used by crash recovery to decide whether a leftover directory has already been turned
+    /// into a session. Asks about the transcript, not the row: a crash between the session
+    /// insert and the segment insert leaves a row with nothing in it, and that row must not
+    /// suppress recovery — it is excluded from the coaching sweeps too (they require a
+    /// transcript), so the interview would otherwise be unreachable by every path at once.
+    public func sessionHasTranscript(id: Int64) throws -> Bool {
+        try dbWriter.read { db in
+            try Bool.fetchOne(db, sql: "SELECT 1 FROM transcriptSegment WHERE sessionId = ? LIMIT 1",
+                              arguments: [id]) ?? false
+        }
     }
 
     public func deleteSession(id: Int64) throws {

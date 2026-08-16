@@ -163,11 +163,16 @@ final class AppEnvironment: ObservableObject {
     func clearRecordMetadata() { recordCompany = ""; recordNotes = "" }
 
     /// Single stop path shared by the two Stop buttons and call-end auto-stop.
+    ///
+    /// The form is read and cleared *before* the await, not after: stopping now takes as long
+    /// as the recorders and the last in-flight decode, and the next interview can be started
+    /// and typed into during that window. Clearing afterwards wiped the company the user had
+    /// just entered for the new recording.
     func stopAndDebrief() async {
         let name = recordCompany.isEmpty ? "Unknown" : recordCompany
-        _ = await coordinator.stopAndFinalize(
-            metadata: .init(company: name, roundType: recordRoundType, notes: recordNotes))
+        let metadata = SessionMetadata(company: name, roundType: recordRoundType, notes: recordNotes)
         clearRecordMetadata()
+        _ = await coordinator.stopAndFinalize(metadata: metadata)
     }
 
     /// Single start path shared by the two Record buttons and the notification's
@@ -212,7 +217,13 @@ final class AppEnvironment: ObservableObject {
         coordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         // A finished job may have consumed a recoverable directory (or failed and kept one),
         // and there is no longer a phase returning to .idle to hang that rescan off.
-        coordinator.$finalizeCompletions.dropFirst()
+        //
+        // `receive(on:)` is load-bearing, not tidiness: @Published delivers synchronously
+        // *inside* the mutation, which happens while runFinalize is still on the stack — its
+        // `defer` has not released the directory claim yet, so a rescan there would still see
+        // the dir as active and drop it. A failed finalize would then keep telling the user to
+        // discard its audio from a recovery prompt that no longer lists it.
+        coordinator.$finalizeCompletions.dropFirst().receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshRecoverables() }.store(in: &cancellables)
         // Launch-time reclaim of debriefs whose process died mid-call. `running` is excluded
         // from every sweep, so without this they would never be retried. Safe here because
@@ -227,12 +238,17 @@ final class AppEnvironment: ObservableObject {
     /// authority on what is claimed *right now*, and the manifest's session id catches a dir
     /// whose transcript already landed in a *previous* launch — recovering that would insert
     /// the same interview twice.
-    private func refreshRecoverables() {
+    ///
+    /// The second filter asks whether that session has a *transcript*, not whether the row
+    /// exists: a crash between the session insert and the segment insert leaves an empty row,
+    /// and treating that as "already recovered" would hide the only remaining copy of the
+    /// interview — the audio — behind a row the coaching sweeps skip for having no transcript.
+    func refreshRecoverables() {
         let active = coordinator.activeDirs
         recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot).filter { dir in
             guard !active.contains(dir.lastPathComponent) else { return false }
             guard let id = RecordingStore.readManifest(in: dir)?.sessionId else { return true }
-            return (try? db.sessionExists(id: id)) != true
+            return (try? db.sessionHasTranscript(id: id)) != true
         }
     }
 
