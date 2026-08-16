@@ -100,6 +100,28 @@ public final class AppDatabase: Sendable {
                 }
             }
         }
+        // Calls you know are coming: company, role, round type, when, and the notes and
+        // grading criteria you want the debrief written against — entered *before* the call
+        // so the first debrief already has them.
+        //
+        // Deliberately its own table rather than a session in a "planned" state. A session
+        // row is born at finalize, not at record-start: a planned session would show up as a
+        // zero-minute row in Sessions/Pipeline/Trends, and `runFinalize`'s orphan
+        // compensation deletes the session row outright when a call transcribes to no
+        // speech — taking the plan with it. `companyName` is plain text (not a companyId)
+        // because finalize resolves the company itself via `fetchOrCreateCompany`, so a
+        // plan that is never recorded leaves no empty company behind.
+        m.registerMigration("v6") { db in
+            try db.create(table: "plannedCall") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("companyName", .text).notNull()
+                t.column("role", .text).notNull().defaults(to: "")
+                t.column("roundType", .text).notNull()
+                t.column("scheduledDate", .datetime).notNull()
+                t.column("notes", .text).notNull().defaults(to: "")
+                t.column("customInstructions", .text).notNull().defaults(to: "")
+            }
+        }
         return m
     }
 }

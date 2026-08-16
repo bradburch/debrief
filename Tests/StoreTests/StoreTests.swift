@@ -285,6 +285,57 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(Set(try db.sessionsNeedingCoaching().map(\.id)), [running, pending])
     }
 
+    func testPlannedCallsRoundTripAndComeBackSoonestFirst() throws {
+        let later = try db.insertPlannedCall(.init(companyName: "Globex", role: "Staff iOS",
+                                                   roundType: .technical,
+                                                   scheduledDate: Date(timeIntervalSince1970: 2_000),
+                                                   notes: "panel of two",
+                                                   customInstructions: "Grade on API design."))
+        let sooner = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .behavioral,
+                                                    scheduledDate: Date(timeIntervalSince1970: 1_000)))
+
+        let all = try db.plannedCalls()
+        XCTAssertEqual(all.map(\.id), [sooner.id, later.id], "planned calls must come back soonest first")
+        let stored = try XCTUnwrap(all.last)
+        XCTAssertEqual(stored.companyName, "Globex")
+        XCTAssertEqual(stored.role, "Staff iOS")
+        XCTAssertEqual(stored.roundType, .technical)   // single-value coded, not {"rawValue":…}
+        XCTAssertEqual(stored.notes, "panel of two")
+        XCTAssertEqual(stored.customInstructions, "Grade on API design.")
+        // The defaulted columns, which the record's own defaults also cover.
+        XCTAssertEqual(all.first?.role, "")
+        XCTAssertEqual(all.first?.notes, "")
+        XCTAssertEqual(all.first?.customInstructions, "")
+
+        var edited = stored
+        edited.companyName = "Globex Inc"
+        edited.roundType = .systemDesign
+        edited.customInstructions = "Grade on scalability."
+        try db.updatePlannedCall(edited)
+        let after = try XCTUnwrap(db.plannedCalls().last)
+        XCTAssertEqual(after.companyName, "Globex Inc")
+        XCTAssertEqual(after.roundType, .systemDesign)
+        XCTAssertEqual(after.customInstructions, "Grade on scalability.")
+
+        try db.deletePlannedCall(id: XCTUnwrap(sooner.id))
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [later.id])
+        // Editing a plan that a finalize already consumed is a no-op, not a throw.
+        XCTAssertNoThrow(try db.updatePlannedCall(sooner))
+    }
+
+    /// Planned calls are not sessions, and every session-shaped query has to keep agreeing:
+    /// one showing up in Sessions, Pipeline or Trends would be a zero-minute phantom round.
+    func testPlannedCallsAreInvisibleToEverySessionQuery() throws {
+        _ = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .behavioral,
+                                           scheduledDate: Date()))
+        XCTAssertTrue(try db.allSessionSummaries().isEmpty)
+        XCTAssertTrue(try db.pipeline().isEmpty, "a planned call must not create a company either")
+        XCTAssertTrue(try db.scoresByDate(roundType: nil).isEmpty)
+        XCTAssertTrue(try db.sessionsNeedingCoaching().isEmpty)
+        XCTAssertTrue(try db.sessionsWithTranscript().isEmpty)
+        XCTAssertEqual(try db.sessionCount(forRoundType: .behavioral), 0)
+    }
+
     func testCustomInstructionsDefaultsEmptyAndRoundTrips() throws {
         let co = try db.fetchOrCreateCompany(named: "Acme")
         let s = try db.insertSession(.init(id: nil, companyId: co.id!, roundType: .behavioral,

@@ -228,6 +228,46 @@ extension AppDatabase {
         }
     }
 
+    // MARK: - Planned calls
+    //
+    // A closed little table with no joins to anything: planned calls are deliberately
+    // invisible to `allSessionSummaries`, `pipeline`, `scoresByDate` and the coaching
+    // sweeps, because they are not sessions and must never be counted as one.
+
+    /// Soonest first — the order every surface offers them in.
+    public func plannedCalls() throws -> [PlannedCall] {
+        try dbWriter.read { db in
+            try PlannedCall.order(Column("scheduledDate")).fetchAll(db)
+        }
+    }
+
+    @discardableResult
+    public func insertPlannedCall(_ plan: PlannedCall) throws -> PlannedCall {
+        try dbWriter.write { db in var p = plan; try p.insert(db); return p }
+    }
+
+    /// Raw UPDATE rather than `record.update(db)`, which throws `recordNotFound`: editing a
+    /// plan the user recorded (and finalize therefore consumed) from a still-open sheet is a
+    /// no-op, not an error to surface.
+    public func updatePlannedCall(_ plan: PlannedCall) throws {
+        guard let id = plan.id else { return }
+        try dbWriter.write { db in
+            try db.execute(sql: """
+                UPDATE plannedCall SET companyName = ?, role = ?, roundType = ?,
+                                       scheduledDate = ?, notes = ?, customInstructions = ?
+                WHERE id = ?
+                """,
+                arguments: [plan.companyName, plan.role, plan.roundType.rawValue,
+                            plan.scheduledDate, plan.notes, plan.customInstructions, id])
+        }
+    }
+
+    public func deletePlannedCall(id: Int64) throws {
+        try dbWriter.write { db in
+            try db.execute(sql: "DELETE FROM plannedCall WHERE id = ?", arguments: [id])
+        }
+    }
+
     public func recentWeaknessTags(limitSessions: Int) throws -> [(tag: String, count: Int)] {
         try dbWriter.read { db in
             let rows = try Row.fetchAll(db, sql: """
