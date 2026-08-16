@@ -234,10 +234,21 @@ extension AppDatabase {
     // invisible to `allSessionSummaries`, `pipeline`, `scoresByDate` and the coaching
     // sweeps, because they are not sessions and must never be counted as one.
 
-    /// Soonest first — the order every surface offers them in.
-    public func plannedCalls() throws -> [PlannedCall] {
+    /// Soonest first — the order every surface offers them in — and bounded, because a plan
+    /// is consumed only by a *successful* finalize: one you never recorded stays forever, and
+    /// ascending order puts the oldest of them at the TOP of both the sidebar list and the
+    /// pre-fill menu.
+    ///
+    /// A **filter, not a purge**: the row stays in the table. The 24h grace is what keeps an
+    /// interview that ran late — or one whose finalize failed overnight — on the recovery
+    /// prompt the next morning, which is the case the plan matters most for.
+    public func plannedCalls(now: Date = Date()) throws -> [PlannedCall] {
         try dbWriter.read { db in
-            try PlannedCall.order(Column("scheduledDate")).fetchAll(db)
+            try PlannedCall
+                .filter(Column("scheduledDate") > now.addingTimeInterval(-24 * 3600))
+                .order(Column("scheduledDate"))
+                .limit(20)
+                .fetchAll(db)
         }
     }
 
@@ -249,9 +260,14 @@ extension AppDatabase {
     /// Raw UPDATE rather than `record.update(db)`, which throws `recordNotFound`: editing a
     /// plan the user recorded (and finalize therefore consumed) from a still-open sheet is a
     /// no-op, not an error to surface.
-    public func updatePlannedCall(_ plan: PlannedCall) throws {
-        guard let id = plan.id else { return }
-        try dbWriter.write { db in
+    ///
+    /// Returns whether a row was actually updated — **false is not nothing happened, it is
+    /// the row is gone**. The caller owns what to do about the typing that would otherwise be
+    /// silently dropped (`AppEnvironment.savePlannedCall` re-inserts it as a new plan).
+    @discardableResult
+    public func updatePlannedCall(_ plan: PlannedCall) throws -> Bool {
+        guard let id = plan.id else { return false }
+        return try dbWriter.write { db in
             try db.execute(sql: """
                 UPDATE plannedCall SET companyName = ?, role = ?, roundType = ?,
                                        scheduledDate = ?, notes = ?, customInstructions = ?
@@ -259,6 +275,7 @@ extension AppDatabase {
                 """,
                 arguments: [plan.companyName, plan.role, plan.roundType.rawValue,
                             plan.scheduledDate, plan.notes, plan.customInstructions, id])
+            return db.changesCount > 0
         }
     }
 

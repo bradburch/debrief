@@ -5,8 +5,10 @@ import Store
 import Transcriber
 import CoachingEngine
 import CaptureKit
+import os
 
 private let anthropicKeyName = "anthropic-api-key"
+private let logger = Logger(subsystem: "com.debrief.app", category: "environment")
 
 @MainActor
 final class AppEnvironment: ObservableObject {
@@ -38,8 +40,10 @@ final class AppEnvironment: ObservableObject {
 
     /// The planned call whose metadata is currently in the stop-form, if any. Consumed at
     /// stop: the row is deleted only once its finalize has actually produced a session id.
-    /// Not published — nothing renders it, and it must not survive a stop.
-    private var appliedPlannedCallId: Int64?
+    /// Not published — nothing renders it, and it must not survive a stop. Readable (not
+    /// writable) inside the module so tests can assert on the claim itself: every way of
+    /// releasing it is invisible from the outside until a stop happens.
+    private(set) var appliedPlannedCallId: Int64?
 
     /// The "Plan a call" sheet's draft, presented by MainWindow. Lives here rather than as
     /// view @State because the menu-bar popover opens it too, and a `MenuBarExtra` window
@@ -49,12 +53,22 @@ final class AppEnvironment: ObservableObject {
     func refreshPlannedCalls() { plannedCalls = (try? db.plannedCalls()) ?? [] }
 
     /// Creates or updates a planned call from the sheet's draft, then refreshes the list.
+    ///
+    /// An update that matches no row means the plan was consumed by a finalize while its
+    /// editor was open — which is not rare, since the sheet is modal to the window and a call
+    /// can end at any time. Dropping the edit there would silently discard whatever was just
+    /// typed, so the draft is re-inserted as a new plan instead: a duplicate row is trivially
+    /// deletable, lost typing is not recoverable.
     func savePlannedCall(_ draft: PlannedCallDraft) {
         let plan = draft.plannedCall
-        if plan.id == nil {
-            _ = try? db.insertPlannedCall(plan)
-        } else {
-            try? db.updatePlannedCall(plan)
+        do {
+            if try plan.id == nil || !db.updatePlannedCall(plan) {
+                var fresh = plan
+                fresh.id = nil
+                _ = try db.insertPlannedCall(fresh)
+            }
+        } catch {
+            logger.error("could not save planned call: \(error.localizedDescription, privacy: .public)")
         }
         refreshPlannedCalls()
     }
@@ -63,6 +77,16 @@ final class AppEnvironment: ObservableObject {
         try? db.deletePlannedCall(id: id)
         if appliedPlannedCallId == id { appliedPlannedCallId = nil }
         refreshPlannedCalls()
+    }
+
+    /// Undo for a pre-fill. Applying a plan is otherwise a one-way latch: it arms a rubric
+    /// this interview will be graded on and marks a row for deletion at stop, and until this
+    /// existed the only exit from a mis-click mid-call was to record the wrong plan's
+    /// criteria and lose that plan. Leaves company/round/notes alone — those are visibly
+    /// editable in the form; the criteria and the claim are the invisible half.
+    func clearAppliedPlan() {
+        recordCriteria = ""
+        appliedPlannedCallId = nil
     }
 
     /// Prefers EventKit (live macOS Calendar, including a synced Google account) over the
@@ -260,18 +284,33 @@ final class AppEnvironment: ObservableObject {
     /// been enqueued — and if it ever did lose the race, the plan is kept, not wrongly eaten.
     private func consumePlan(_ id: Int64?, after job: UUID?) {
         guard let id, let job else { return }
-        planConsumption = Task { [weak self] in
+        planConsumptions.append(Task { [weak self] in
             guard let self, await self.coordinator.awaitFinalize(job) != nil else { return }
             self.deletePlannedCall(id: id)
-        }
+        })
     }
 
-    /// The consume follow-up in flight. Kept only so tests can await the *decision* — the
-    /// interesting assertion is often that a plan was NOT deleted, and a negative assertion
-    /// behind a yield loop passes vacuously whenever the task simply hasn't run yet.
-    private var planConsumption: Task<Void, Never>?
+    /// Every consume follow-up in flight, not just the newest. Kept at all so tests can await
+    /// the *decision*: an assertion that a plan was NOT deleted passes vacuously whenever the
+    /// task simply hasn't run yet.
+    ///
+    /// An array rather than a single `Task?` because finalizes overlap by design — stop
+    /// interview A, start B, stop B. Be aware this is **not** pinned by a test, and can't
+    /// easily be: jobs drain through one serial chain, so consumes resolve in enqueue order
+    /// and awaiting only the newest happens to await the rest as a side effect. That is a
+    /// coincidence of the current queue, not a contract — and the cost of relying on it is a
+    /// plan that is never deleted.
+    private var planConsumptions: [Task<Void, Never>] = []
 
-    func awaitPlanConsumption() async { await planConsumption?.value }
+    /// Drains and awaits them all, re-checking afterwards — a consume that finishes can be
+    /// followed by another appended while we were suspended.
+    func awaitPlanConsumption() async {
+        while !planConsumptions.isEmpty {
+            let pending = planConsumptions
+            planConsumptions = []
+            for task in pending { await task.value }
+        }
+    }
 
     /// Single start path shared by the two Record buttons and the notification's
     /// Record action; clears the call-detected notification so it can't be

@@ -289,11 +289,11 @@ final class StoreTests: XCTestCase {
     func testPlannedCallsRoundTripAndComeBackSoonestFirst() throws {
         let later = try db.insertPlannedCall(.init(companyName: "Globex", role: "Staff iOS",
                                                    roundType: .technical,
-                                                   scheduledDate: Date(timeIntervalSince1970: 2_000),
+                                                   scheduledDate: Date(timeIntervalSinceNow: 7_200),
                                                    notes: "panel of two",
                                                    customInstructions: "Grade on API design."))
         let sooner = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .behavioral,
-                                                    scheduledDate: Date(timeIntervalSince1970: 1_000)))
+                                                    scheduledDate: Date(timeIntervalSinceNow: 3_600)))
 
         let all = try db.plannedCalls()
         XCTAssertEqual(all.map(\.id), [sooner.id, later.id], "planned calls must come back soonest first")
@@ -330,6 +330,52 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try db.plannedCalls().map(\.id), [later.id])
         // Editing a plan that a finalize already consumed is a no-op, not a throw.
         XCTAssertNoThrow(try db.updatePlannedCall(sooner))
+    }
+
+    /// A plan is consumed only by a *successful* finalize, so the ones you never recorded
+    /// accumulate — and ascending order parks the oldest of them at the top of the sidebar
+    /// list and the pre-fill menu. The window is a filter, not a purge: the 24h grace keeps
+    /// an interview that ran late (or whose finalize failed overnight) available the next
+    /// morning, which is exactly when the recovery prompt needs it.
+    func testPlannedCallsDropStaleEntriesButKeepTheOvernightGrace() throws {
+        let now = Date()
+        let lastWeek = try db.insertPlannedCall(.init(companyName: "Stale", roundType: .behavioral,
+                                                      scheduledDate: now.addingTimeInterval(-7 * 86_400)))
+        let anHourAgo = try db.insertPlannedCall(.init(companyName: "RanLate", roundType: .behavioral,
+                                                       scheduledDate: now.addingTimeInterval(-3_600)))
+        let tomorrow = try db.insertPlannedCall(.init(companyName: "Upcoming", roundType: .behavioral,
+                                                      scheduledDate: now.addingTimeInterval(86_400)))
+
+        let offered = try db.plannedCalls(now: now)
+        XCTAssertEqual(offered.map(\.id), [anHourAgo.id, tomorrow.id],
+                       "a week-old plan is still at the top of every pre-fill menu")
+        XCTAssertFalse(offered.contains { $0.id == lastWeek.id })
+        // Filtered, not purged — the row is still there to be deleted or re-dated.
+        XCTAssertEqual(try db.plannedCalls(now: now.addingTimeInterval(-7 * 86_400)).count, 3)
+
+        // And the list is bounded, so a runaway backlog can't fill the sidebar.
+        for i in 0..<25 {
+            _ = try db.insertPlannedCall(.init(companyName: "Bulk\(i)", roundType: .behavioral,
+                                               scheduledDate: now.addingTimeInterval(Double(i) * 60)))
+        }
+        XCTAssertEqual(try db.plannedCalls(now: now).count, 20)
+    }
+
+    /// The row can vanish under an open editor: the sheet is modal to the window, and the
+    /// call it plans can finish (and consume it) at any moment. Silently dropping the typing
+    /// is the one outcome that isn't recoverable — a duplicate row is one right-click away.
+    func testUpdatingAConsumedPlanReportsTheMissingRowRatherThanFailingQuietly() throws {
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .behavioral,
+                                                  scheduledDate: Date(timeIntervalSinceNow: 3_600)))
+        var edited = plan
+        edited.companyName = "Acme Corp"
+        XCTAssertTrue(try db.updatePlannedCall(edited), "an existing row must report as updated")
+
+        try db.deletePlannedCall(id: XCTUnwrap(plan.id))
+        XCTAssertFalse(try db.updatePlannedCall(edited), "a consumed row must report as missing")
+        XCTAssertFalse(try db.updatePlannedCall(.init(companyName: "New", roundType: .behavioral,
+                                                      scheduledDate: Date())),
+                       "a plan with no id was never in the table")
     }
 
     /// Planned calls are not sessions, and every session-shaped query has to keep agreeing:

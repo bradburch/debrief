@@ -432,6 +432,127 @@ final class AppEnvironmentTests: XCTestCase {
                        "recording a different interview consumed the Acme plan")
     }
 
+    /// The headline of the concurrency work, applied to plans: stop A, start B, stop B. Each
+    /// session must carry the criteria of the plan *it* was recorded under, and each plan is
+    /// consumed by its own finalize — a single shared "applied plan" or a single consume task
+    /// crosses them, and the symptom is one interview graded on another's rubric.
+    func testOverlappingRecordingsEachKeepTheirOwnPlanAndCriteria() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let planP = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                   scheduledDate: Date(), customInstructions: "CRITERIA_P"))
+        let planQ = try db.insertPlannedCall(.init(companyName: "Globex", roundType: .behavioral,
+                                                   scheduledDate: Date(), customInstructions: "CRITERIA_Q"))
+        env.refreshPlannedCalls()
+
+        env.apply(planP)
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()          // deliberately NOT awaited to completion
+
+        // B starts while A is still finalizing — the whole point of the job queue.
+        await env.coordinator.startRecording()
+        env.apply(planQ)
+        await env.stopAndDebrief()
+
+        await env.coordinator.awaitAllFinalizes()
+        await env.awaitPlanConsumption()
+
+        let rows = try db.allSessionSummaries()
+        XCTAssertEqual(rows.count, 2)
+        let acme = try XCTUnwrap(rows.first { $0.companyName == "Acme" }?.session)
+        let globex = try XCTUnwrap(rows.first { $0.companyName == "Globex" }?.session)
+        XCTAssertEqual(acme.customInstructions, "CRITERIA_P", "session A was graded on B's rubric")
+        XCTAssertEqual(globex.customInstructions, "CRITERIA_Q", "session B was graded on A's rubric")
+        XCTAssertEqual(acme.roundType, .technical)
+        XCTAssertEqual(globex.roundType, .behavioral)
+        let leftover = try db.plannedCalls()
+        XCTAssertTrue(leftover.isEmpty,
+                      "both plans were recorded; a consume follow-up was dropped: \(leftover.map(\.companyName))")
+    }
+
+    /// Applying a plan arms a rubric and marks a row for deletion. Both halves are invisible
+    /// in the form, so a mis-click mid-call needs an undo that releases the claim as well as
+    /// the criteria — otherwise the wrong plan is deleted when this interview stops.
+    func testDismissingTheAppliedCriteriaReleasesThePlanClaimToo() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        env.apply(plan)
+        XCTAssertEqual(env.appliedPlannedCallId, plan.id)
+        env.clearAppliedPlan()
+        XCTAssertEqual(env.recordCriteria, "")
+        XCTAssertNil(env.appliedPlannedCallId)
+        // Company/round/notes are visibly editable, so they are deliberately left alone.
+        XCTAssertEqual(env.recordCompany, "Acme")
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+        await env.awaitPlanConsumption()
+
+        XCTAssertEqual(try XCTUnwrap(db.allSessionSummaries().first?.session).customInstructions, "",
+                       "the dismissed rubric was still applied to the recording")
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [plan.id],
+                       "the dismissed plan was consumed by a recording that didn't use it")
+    }
+
+    /// Deleting the plan that is currently pre-filled has to release the claim: the row is
+    /// gone, and a claim on a dead id is a delete aimed at whatever comes to occupy it.
+    func testDeletingTheAppliedPlanReleasesTheClaim() throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(), customInstructions: "X"))
+        env.refreshPlannedCalls()
+        env.apply(plan)
+        XCTAssertEqual(env.appliedPlannedCallId, plan.id)
+
+        env.deletePlannedCall(id: try XCTUnwrap(plan.id))
+        XCTAssertNil(env.appliedPlannedCallId, "a claim survived the row it pointed at")
+    }
+
+    /// The sheet is modal to the window, and the call it plans can end — consuming the row —
+    /// while it is open. Saving then updates nothing, and the typing is gone. Re-insert it
+    /// instead: a duplicate row is one right-click away, lost typing isn't recoverable.
+    func testSavingAnEditToAConsumedPlanKeepsTheTypingAsANewPlan() throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(timeIntervalSinceNow: 3_600)))
+        env.refreshPlannedCalls()
+
+        var draft = PlannedCallDraft(plan)
+        draft.customInstructions = "Grade on API design."
+        try db.deletePlannedCall(id: XCTUnwrap(plan.id))   // the call ran and finalized meanwhile
+        env.savePlannedCall(draft)
+
+        let saved = try XCTUnwrap(env.plannedCalls.first)
+        XCTAssertEqual(env.plannedCalls.count, 1)
+        XCTAssertEqual(saved.customInstructions, "Grade on API design.", "the edit was silently discarded")
+        XCTAssertNotEqual(saved.id, plan.id, "the consumed row cannot be resurrected under its old id")
+    }
+
+    /// Whitespace-only criteria must not survive to the row: `assembleSystemPrompt` trims
+    /// them away and appends nothing, so storing them would light the "criteria applied"
+    /// badge over a rubric the debrief never sees.
+    func testPlannedCallDraftTrimsEveryFieldOnItsWayToTheRow() {
+        var draft = PlannedCallDraft()
+        draft.companyName = "  Acme  "
+        draft.role = "  Staff iOS\n"
+        draft.notes = "  panel of two  "
+        draft.customInstructions = "   \n  "
+        let plan = draft.plannedCall
+        XCTAssertEqual(plan.companyName, "Acme")
+        XCTAssertEqual(plan.role, "Staff iOS")
+        XCTAssertEqual(plan.notes, "panel of two")
+        XCTAssertEqual(plan.customInstructions, "")
+        XCTAssertFalse(PlannedCallDraft().isValid, "a plan with no company can't pre-fill anything")
+    }
+
     func testContextNotesFoldsTheRoleInWithoutInventingSeparators() {
         XCTAssertEqual(AppEnvironment.contextNotes(role: "Staff iOS", notes: "panel of two"),
                        "Role: Staff iOS — panel of two")

@@ -44,11 +44,25 @@ struct RecordingControls: View {
     /// written when the call was planned), but they must be visible: they change how this
     /// interview is graded, and silently carried state is how a wrong rubric goes unnoticed.
     /// Editable per session in the debrief pane afterwards, as before.
+    ///
+    /// The dismiss button is the only undo for a pre-fill. Applying a plan arms a rubric AND
+    /// marks that plan for deletion at stop, so a mis-click mid-call otherwise costs both:
+    /// this interview graded on the wrong criteria, and the right interview's plan gone.
     @ViewBuilder private var criteriaNote: some View {
         if !env.recordCriteria.isEmpty {
-            Label("Grading criteria applied", systemImage: "text.badge.checkmark")
-                .font(.caption).foregroundStyle(.secondary)
-                .help(env.recordCriteria)
+            HStack(spacing: 2) {
+                Label("Grading criteria applied", systemImage: "text.badge.checkmark")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button {
+                    env.clearAppliedPlan()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Don't apply these criteria, and keep the planned call")
+            }
+            .help(env.recordCriteria)
         }
     }
 

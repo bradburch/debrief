@@ -71,6 +71,7 @@ struct PlannedCallEditor: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)   // Escape dismisses, as a sheet should
                 Button("Save") {
                     env.savePlannedCall(draft)
                     dismiss()

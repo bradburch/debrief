@@ -38,9 +38,23 @@ struct RecoveryPrompt: View {
             Picker("Round", selection: $roundType) {
                 ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
             }
+            // The same latch as the stop-form, and the same undo: here criteria and the plan
+            // claim are set at apply and otherwise released only by recovering or discarding.
             if !criteria.isEmpty {
-                Label("Grading criteria applied", systemImage: "text.badge.checkmark")
-                    .font(.caption).foregroundStyle(.secondary).help(criteria)
+                HStack(spacing: 2) {
+                    Label("Grading criteria applied", systemImage: "text.badge.checkmark")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button {
+                        criteria = ""
+                        plannedCallId = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Don't apply these criteria, and keep the planned call")
+                }
+                .help(criteria)
             }
             HStack {
                 Button("Discard") { env.discard(dir) }
