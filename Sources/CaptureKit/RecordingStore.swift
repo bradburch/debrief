@@ -3,7 +3,15 @@ import Foundation
 public struct RecordingManifest: Codable, Equatable, Sendable {
     public var startedAt: Date
     public var finalized: Bool
-    public init(startedAt: Date, finalized: Bool) { self.startedAt = startedAt; self.finalized = finalized }
+    /// Stamped as soon as the session row lands, before the finalize that inserted it has
+    /// finished. It closes the duplicate-session window: a crash between the insert and
+    /// `finalized: true` leaves a dir that still looks recoverable, and recovering it would
+    /// transcribe and insert the same interview a second time. Nil for a dir written before
+    /// this field existed, and for one whose row was never inserted.
+    public var sessionId: Int64?
+    public init(startedAt: Date, finalized: Bool, sessionId: Int64? = nil) {
+        self.startedAt = startedAt; self.finalized = finalized; self.sessionId = sessionId
+    }
 }
 
 public enum RecordingStore {
