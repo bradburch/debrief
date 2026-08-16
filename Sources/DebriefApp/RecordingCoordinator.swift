@@ -10,8 +10,15 @@ public struct SessionMetadata: Sendable {
     public var company: String
     public var roundType: RoundType
     public var notes: String
-    public init(company: String, roundType: RoundType, notes: String) {
+    /// Per-interview grading criteria, carried from a planned call (or the recovery prompt)
+    /// into the session row at insert time. It has to travel with the metadata rather than
+    /// being typed in afterwards, because feedback is written once during finalize: criteria
+    /// added to the row later only reach the debrief on a re-coach.
+    public var customInstructions: String
+    public init(company: String, roundType: RoundType, notes: String,
+                customInstructions: String = "") {
         self.company = company; self.roundType = roundType; self.notes = notes
+        self.customInstructions = customInstructions
     }
 }
 
@@ -467,7 +474,8 @@ public final class RecordingCoordinator: ObservableObject {
             let session = try db.insertSession(InterviewSession(
                 id: nil, companyId: company.id!, roundType: metadata.roundType, date: startedAt,
                 durationSeconds: durationSeconds,
-                contextNotes: metadata.notes, coachingStatus: .pending))
+                contextNotes: metadata.notes, coachingStatus: .pending,
+                customInstructions: metadata.customInstructions))
             insertedSessionId = session.id
             // Stamped before the segments land, while the dir still reads as unfinalized: a
             // crash from here on leaves a directory that recovery must NOT offer again, and

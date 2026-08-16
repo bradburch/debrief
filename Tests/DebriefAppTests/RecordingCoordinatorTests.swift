@@ -122,6 +122,23 @@ struct OKStubLLM: CoachingLLM {
     }
 }
 
+/// Captures the system prompt each debrief was written against, so a test can prove the
+/// criteria a session was *recorded* with reached its first debrief — not just the row.
+final class PromptSpyLLM: CoachingLLM, @unchecked Sendable {
+    private let lock = NSLock()
+    private var prompts: [String] = []
+    var systemPrompts: [String] { lock.lock(); defer { lock.unlock() }; return prompts }
+
+    func generateCoaching(systemPrompt: String, userMessage: String,
+                          dimensions: [String]) async throws -> CoachingResult {
+        lock.lock(); prompts.append(systemPrompt); lock.unlock()
+        return CoachingResult(proseDebrief: "ok",
+                              scores: Dictionary(uniqueKeysWithValues: dimensions.map { ($0, 3) }),
+                              advancement: .leanYes, advancementRationale: "ok",
+                              weaknessTags: [], highlights: [], actionItems: [])
+    }
+}
+
 @MainActor
 extension RecordingCoordinator {
     /// Test convenience for the common "stop and wait for the debrief" shape. Production
@@ -137,13 +154,14 @@ extension RecordingCoordinator {
 final class RecordingCoordinatorTests: XCTestCase {
     func makeCoordinator(root: URL, db: AppDatabase, deleteAudio: Bool = true,
                          transcriber: Transcribing = FakeTranscriber(textForChunk: "final"),
+                         llm: CoachingLLM = OKStubLLM(),
                          plan: RecorderPlan = RecorderPlan()) throws -> RecordingCoordinator {
         let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let prompts = PromptStore(directory: promptDir)
         try prompts.ensureDefaults()
         return RecordingCoordinator(
             db: db,
-            coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
+            coaching: CoachingService(db: db, prompts: prompts, llm: llm),
             transcriber: transcriber,
             makeMicRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, tailSeconds: plan.tailSeconds,
                                            stopGate: plan.stopGate) },
@@ -220,6 +238,31 @@ final class RecordingCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.finalizeJobs.first?.failure)
         XCTAssertFalse(coordinator.hasActiveJobs)
         XCTAssertTrue(coordinator.activeDirs.isEmpty, "the claim must be released when the job ends")
+    }
+
+    /// Grading criteria entered before the call (from a planned call, or the recovery prompt)
+    /// must be on the session row by the time finalize coaches it. Feedback is written once,
+    /// during finalize — criteria that only land on the row afterwards reach the debrief on a
+    /// re-coach and never on the first one, which is the whole point of planning ahead.
+    func testPreEnteredCriteriaReachTheFirstDebriefNotJustTheRow() async throws {
+        let root = try makeRoot()
+        let db = try AppDatabase.inMemory()
+        let spy = PromptSpyLLM()
+        let coordinator = try makeCoordinator(root: root, db: db, llm: spy)
+
+        await coordinator.startRecording()
+        let sessionId = await coordinator.stopAndAwait(metadata: .init(
+            company: "Acme", roundType: .behavioral, notes: "Role: Staff iOS — onsite",
+            customInstructions: "GRADE_MARKER_XYZ"))
+        let id = try XCTUnwrap(sessionId)
+
+        let detail = try XCTUnwrap(db.sessionDetail(id: id))
+        XCTAssertEqual(detail.session.customInstructions, "GRADE_MARKER_XYZ")
+        XCTAssertEqual(detail.session.contextNotes, "Role: Staff iOS — onsite")
+        XCTAssertEqual(detail.session.coachingStatus, .complete)
+        XCTAssertEqual(spy.systemPrompts.count, 1)
+        XCTAssertTrue(spy.systemPrompts.contains { $0.contains("GRADE_MARKER_XYZ") },
+                      "the criteria never reached the system prompt of the first debrief")
     }
 
     func testChunkOffsetsApplied() async throws {
