@@ -59,8 +59,8 @@ struct MainWindow: View {
         }
         .frame(minWidth: 900, minHeight: 560)
         .background(WindowFrameAutosave(name: "DebriefMainWindow"))
-        // Armed from launch, since the Window scene now opens at launch (no LSUIElement).
-        // AppDelegate needs this to answer a Dock click after the window was closed.
+        // A backstop; MenuBarLabel is what actually arms this at launch (see its comment —
+        // the Window scene does not open by itself, so this runs only once a window exists).
         .onAppear { AppDelegate.openMainWindow = { openWindow(id: "main") } }
         // Presented here, not in the views that open it: the menu-bar popover is a
         // MenuBarExtra window and can't reliably present a sheet of its own, so its

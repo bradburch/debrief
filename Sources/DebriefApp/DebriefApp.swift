@@ -10,7 +10,7 @@ struct DebriefApp: App {
         MenuBarExtra {
             MenuBarView().environmentObject(env)
         } label: {
-            Image(systemName: menuBarSymbol)
+            MenuBarLabel(symbol: menuBarSymbol)
         }
         .menuBarExtraStyle(.window)
 
@@ -38,6 +38,23 @@ struct DebriefApp: App {
     }
 }
 
+/// The menu-bar icon, and the one place `AppDelegate.openMainWindow` can be armed early
+/// enough to be useful.
+///
+/// It exists as a named view rather than a bare `Image` for exactly that: the label is the
+/// only part of the app's UI that is rendered from launch, whether or not the user has
+/// opened the popover or the window, so its `onAppear` is the earliest hook that has
+/// `openWindow` in scope.
+private struct MenuBarLabel: View {
+    let symbol: String
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: symbol)
+            .onAppear { AppDelegate.openMainWindow = { openWindow(id: "main") } }
+    }
+}
+
 /// Two jobs, both of which have to happen outside SwiftUI:
 ///
 /// 1. A finalize outlives the recording it came from, so quitting mid-job silently discards a
@@ -54,9 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Opening a `Window(id:)` scene needs SwiftUI's `openWindow` action, which only exists
     /// inside a view — and both callers below (a Dock click, the popover's button) run
-    /// outside one. Whichever view is alive registers the action here. `MainWindow` does it
-    /// on appear, so it is armed from launch: with no `LSUIElement` the Window scene opens
-    /// at launch rather than starting the app at zero windows.
+    /// outside one. Whichever view is alive registers the action here.
+    ///
+    /// `MenuBarLabel` is the one that matters, because it is the only view guaranteed to
+    /// have appeared: dropping `LSUIElement` does NOT make the `Window` scene open at
+    /// launch (measured — the app still starts at zero windows), and the popover's content
+    /// is built lazily on first click. Arming this from `MainWindow` alone left the very
+    /// first Dock click on a fresh launch a silent no-op.
     @MainActor static var openMainWindow: (() -> Void)?
 
     /// Bring the main window up and focused, creating it if the user closed it.
