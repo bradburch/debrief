@@ -2,13 +2,13 @@ import XCTest
 @testable import CoachingEngine
 import Store
 
-/// An LLM that fails the test if it is ever called. A transcript-only round reaching the
-/// model is the whole bug this feature exists to prevent, and it would bill a real API
-/// call per practice session.
+/// An LLM that fails the test if it is ever called, for every path that must bill no call at
+/// all: a transcript-only round reaching the model (one real API call per practice session),
+/// or a second caller coaching a session another call already claimed.
 struct NeverCalledLLM: CoachingLLM {
     func generateCoaching(systemPrompt: String, userMessage: String,
                           dimensions: [String]) async throws -> CoachingResult {
-        XCTFail("transcript-only round was sent to the LLM")
+        XCTFail("an LLM call went out on a path that must never make one")
         throw ClaudeError.emptyResponse
     }
 }

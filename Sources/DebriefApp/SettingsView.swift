@@ -146,8 +146,11 @@ struct SettingsView: View {
                 }
                 if let retryResult { Text(retryResult).font(.caption) }
                 HStack {
+                    // Also gated on live jobs: a sweep started now would reach a session whose
+                    // finalize is coaching it, and `coach()` would (correctly) bail on it —
+                    // reporting it as done on the current rubric when it hasn't been re-run.
                     Button("Re-run debriefs on current rubric") { confirmingRecoach = true }
-                        .disabled(env.isRecoaching)
+                        .disabled(env.isRecoaching || env.coordinator.hasActiveJobs)
                     if env.isRecoaching { Button("Stop") { env.cancelRecoach() } }
                 }
                 if let progress = env.recoachProgress {

@@ -28,6 +28,13 @@ public struct CoachingService: Sendable {
                 try db.markCoachingSkipped(sessionId: sessionId)
                 return
             }
+            // Someone else already has an LLM call out for this session — a finalize job,
+            // most likely, with the user hitting "Re-run debriefs" meanwhile. Bailing is what
+            // makes `running` an actual claim rather than a label: two calls would bill twice
+            // and race to write the same feedback row. Not an error; the debrief in flight is
+            // the one that lands. `running` is cleared by whichever call owns it, or by the
+            // launch sweep if that process died.
+            if detail.session.coachingStatus == .running { return }
             let history = try db.recentWeaknessTags(limitSessions: historyWindow)
             let system = try prompts.assembleSystemPrompt(roundType: detail.session.roundType,
                                                           historyTags: history,
@@ -78,8 +85,12 @@ public struct CoachingService: Sendable {
             } else if let statusBeforeClaim {
                 // Undo the `running` claim. Leaving it would be worse than the old no-op:
                 // `running` is excluded from every sweep, so a stopped re-run would strand
-                // the session until the next launch reclaimed it.
-                try? db.setCoachingStatus(sessionId: sessionId, statusBeforeClaim)
+                // the session until the next launch reclaimed it. Restoring `running` itself
+                // would strand it the same way — unreachable given the bail-out above, but
+                // clamped rather than trusted, because the cost of being wrong is a session
+                // no sweep will ever pick up.
+                try? db.setCoachingStatus(sessionId: sessionId,
+                                          statusBeforeClaim == .running ? .pending : statusBeforeClaim)
             }
             throw error
         }
