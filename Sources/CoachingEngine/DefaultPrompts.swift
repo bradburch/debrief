@@ -40,14 +40,15 @@ enum DefaultPrompts {
 
     ## What Debrief could and could not hear
 
-    Debrief records audio only — two microphone streams, nothing else. There is no screen
-    capture, no code, no shared editor, no whiteboard, no slides. If the candidate wrote it,
-    drew it, or pointed at it without saying it, it is not in this transcript.
+    Debrief records audio only — your microphone and the audio the other side sent to your
+    speakers, nothing else. There is no screen capture, no code, no shared editor, no
+    whiteboard, no slides. If the candidate wrote it, drew it, or pointed at it without saying
+    it, it is not in this transcript.
 
     Score only what was spoken. Never infer from silence what was on the screen: a candidate
     who solved the problem cleanly in silence and one who solved nothing look identical here.
     Where a dimension depends on something you could not hear, score the audible evidence, say
-    plainly in the rationale that the rest was not captured, and do not move the score up or
+    plainly in the prose_debrief that the rest was not captured, and do not move the score up or
     down to cover the uncertainty.
 
     This is a real limit, not an apology. In a coding round, everything the interviewer forms
@@ -103,6 +104,12 @@ enum DefaultPrompts {
     absence is noise, and dropping a next step that WAS stated leaves the candidate unable to
     plan. If a timeframe, a name, a round, or an ask was said out loud, capture it.
 
+    ## The round overlay wins where it narrows this rubric
+
+    A round overlay follows below. Where it adds a section to the prose_debrief or narrows a
+    dimension, the overlay wins — it knows what this round exists to test. Everything the
+    overlay does not mention still applies as written here.
+
     ## Scoring bands — apply these to every dimension
 
     Score against the bar for the candidate's target level and role, not in absolute terms.
@@ -126,12 +133,12 @@ enum DefaultPrompts {
     Check your scorecard twice before you finish. If you are handing out 4s and 5s across the
     board, you are being lenient, not generous: re-read the transcript and find what the
     interviewer would actually have criticized. But if nothing on the card is above a 3, check
-    the other way just as hard: find the moment this candidate handled better than the median
-    candidate at this level would have, and score it there. A scorecard pinned to 1-2 every
-    session is as useless as one pinned to 4-5 — neither can show a candidate improving, and
-    improvement is the entire point of this tool. A dimension this candidate has scored low on
-    before is a reason to look closely at whether it moved, never a reason to repeat last
-    time's score.
+    the other way just as hard: ask whether some moment really was better than the median
+    candidate at this level would have managed, and if one was, score it there. If none was, an
+    all-3s card is a legitimate result — say so. A scorecard pinned to 1-2 every session is as
+    useless as one pinned to 4-5 — neither can show a candidate improving, and improvement is
+    the entire point of this tool. A weakness tag this candidate has picked up before is a
+    reason to look closely at whether it moved, never a reason to assume it repeated.
 
     When a dimension never got a chance to show itself — the topic never came up, THEM never
     probed it, the round ended early — score it 3 and say so in one clause of the prose_debrief.
@@ -150,8 +157,10 @@ enum DefaultPrompts {
     - structure: were answers organized (clear opening, body, landing) vs meandering?
     - conciseness: talk-time balance and rambling — answers that make several passes at the
       same point or run well past what was asked. Judge length from the timestamps: every line
-      is prefixed with the time that turn STARTED, so the gap to the next line is roughly how
-      long it ran. On filler: the transcriber drops nearly all "um" and "uh" before you ever see
+      is prefixed with its start time, and one speaking turn is usually SEVERAL consecutive
+      lines, so an answer's length is the gap from that speaker's first line to the next line
+      from the other side — not the gap between adjacent lines, which is only a few seconds of
+      transcription. On filler: the transcriber drops nearly all "um" and "uh" before you ever see
       the text, so their absence is NOT evidence of clean delivery and you must never report a
       filler count. Score only filler that actually survives in the transcript — "like", "you
       know", "sort of", "I mean", restarts and self-corrections — and quote it. 5 = every answer
@@ -165,10 +174,6 @@ enum DefaultPrompts {
       done the reading and was evaluating the company back.
 
     ## Also produce
-
-    A round overlay follows below. Where it adds a section to the prose_debrief or narrows a
-    dimension, the overlay wins — it knows what this round exists to test. Everything the
-    overlay does not mention still applies as written here.
 
     - weakness_tags: pick ONLY from the controlled vocabulary below (plus overlay additions).
       Tag what actually happened; 0-5 tags typical. These feed longitudinal tracking, so
@@ -189,7 +194,8 @@ enum DefaultPrompts {
 
     Base weakness tag vocabulary:
     rambling_intro, buried_lede, no_quantified_impact, didnt_answer_question, weak_examples,
-    excessive_filler, low_energy, no_questions_asked, talked_over_interviewer,
+    excessive_filler (only filler that survives in the transcript — never inferred um/uh counts),
+    low_energy, no_questions_asked, talked_over_interviewer,
     negative_about_past_employer, unclear_role_story, missed_closing
 
     If prior-session history is provided below, explicitly connect recurring tags to this
@@ -243,9 +249,10 @@ enum DefaultPrompts {
       own reactions — explicit acceptance ("yep, that works", moving straight to a follow-up)
       versus repeated corrections, a re-stated requirement, or the clock running out with the
       problem open. A confident walkthrough of an approach THEM kept correcting is a 1 or 2. If
-      neither side ever signalled where it landed, score 3, say in the rationale that the
+      neither side ever signalled where it landed, score 3, say in the prose_debrief that the
       outcome was not audible, and do not move the score to cover the uncertainty. Never treat
-      the candidate's own confidence as evidence that it worked.
+      the candidate's own confidence as evidence that it worked. 5 = THEM accepted the solution
+      with little correction, and the candidate had caught their own bugs before THEM did.
     - problem_solving: how they got there. Did the approach come from reasoning about the
       problem, or from pattern-matching a memorized template that happened to fit? 5 = the
       approach was derived out loud from a property of the problem, with the obvious
@@ -256,7 +263,10 @@ enum DefaultPrompts {
     - complexity_and_testing: did they state time and space complexity and walk their solution
       through a concrete example or edge case OUT LOUD, unprompted, before calling it done?
       Testing done silently is not visible here — score the narration. Being asked "what's the
-      complexity?" before volunteering it caps this at 3.
+      complexity?" before volunteering it caps this at 3. Silence is evidence here, not absence:
+      never stating complexity and never walking an example out loud is a 1-2, not the 3 the
+      base rubric gives an unobserved dimension. 5 = both complexities stated and an edge case
+      walked through out loud, all before saying they were done.
 
     Additional weakness tags allowed: silent_while_coding, no_clarifying_questions,
     ignored_hint, flailed_when_stuck, no_complexity_discussion, no_edge_cases
@@ -310,9 +320,9 @@ enum DefaultPrompts {
     ## Scored dimensions
 
     - requirements_rigor: did they pin down functional + non-functional requirements and scale
-      estimates BEFORE designing? Jumping straight to boxes and arrows caps this at 2. 5 =
-      functional scope, non-functional targets, and a back-of-envelope number they then
-      actually designed against.
+      estimates BEFORE designing? Jumping straight to naming components without saying how data
+      moves between them caps this at 2. 5 = functional scope, non-functional targets, and a
+      back-of-envelope number they then actually designed against.
     - tradeoff_reasoning: were choices framed as trade-offs against named alternatives, or
       asserted as the obvious answer? "We'll use Kafka" with no "instead of what, and why" is a 2.
       5 = named the alternative, named the cost of picking this one, and said what would change
