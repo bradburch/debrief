@@ -10,8 +10,6 @@ struct MenuBarView: View {
     private static let maxScrollHeight: CGFloat = 420
 
     var body: some View {
-        // Recording state and finalize jobs are stacked, not switched between: starting the
-        // next interview while the last one is still being debriefed is the whole point.
         VStack(alignment: .leading, spacing: 10) {
             // Recording state and finalize jobs are stacked, not switched between: starting
             // the next interview while the last one is still being debriefed is the whole
@@ -89,70 +87,6 @@ struct MenuBarView: View {
         if !env.plannedCalls.isEmpty {
             Text("\(env.plannedCalls.count) planned call\(env.plannedCalls.count == 1 ? "" : "s") — pre-fill from the form after you start.")
                 .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private func recordingSection(started: Date) -> some View {
-        Label("Recording \(started, style: .timer)", systemImage: "record.circle.fill")
-            .foregroundStyle(.red)
-        LevelRow(label: "You", level: env.coordinator.micLevel)
-        LevelRow(label: "Them", level: env.coordinator.systemLevel)
-        if let warning = env.coordinator.streamWarning {
-            Label(warning, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.yellow).font(.caption)
-        }
-        if let p = env.coordinator.transcribeProgress, p.total > 0 {
-            Text("Transcribed \(p.done)/\(p.total) chunks")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        Divider()
-        RecordingControls(axis: .vertical)
-    }
-
-    @ViewBuilder
-    private var idleSection: some View {
-        if !env.recoverableSessions.isEmpty {
-            ForEach(env.recoverableSessions, id: \.self) { dir in
-                RecoveryPrompt(dir: dir)
-            }
-            Divider()
-        }
-        if case .failed(let message) = env.coordinator.recordingPhase {
-            Label(message, systemImage: "xmark.octagon.fill")
-                .foregroundStyle(.red).font(.caption).lineLimit(4)
-        }
-        if env.callDetected {
-            Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
-        }
-        Button {
-            Task { await env.startRecording() }
-        } label: {
-            Label(env.callDetected ? "Record this call" : "Start recording",
-                  systemImage: "record.circle")
-        }
-        // The sheet itself is presented by MainWindow: a MenuBarExtra window can't present
-        // one, so this sets the draft and brings up the window that can.
-        Button {
-            env.planningCall = PlannedCallDraft()
-            openMainWindow()
-        } label: {
-            Label("Plan a call…", systemImage: "calendar.badge.plus")
-        }
-        if !env.plannedCalls.isEmpty {
-            Text("\(env.plannedCalls.count) planned call\(env.plannedCalls.count == 1 ? "" : "s") — pre-fill from the form after you start.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private func openMainWindow() {
-        openWindow(id: "main")
-        // ponytail: openWindow() creates the NSWindow asynchronously; activating
-        // immediately races it and leaves the window unfocused (LSUIElement apps
-        // don't get key status for free). Defer a tick so the window exists first.
-        DispatchQueue.main.async {
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.windows.first { $0.identifier?.rawValue == "main" }?.makeKeyAndOrderFront(nil)
         }
     }
 
