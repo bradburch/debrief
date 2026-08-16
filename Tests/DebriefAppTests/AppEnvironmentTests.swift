@@ -4,6 +4,7 @@ import Combine
 import CaptureKit
 import Store
 import CoachingEngine
+import Transcriber
 
 // Regression test for the nested-ObservableObject gap: AppEnvironment wraps a
 // `coordinator: RecordingCoordinator` (a plain `let`, not @Published), so
@@ -21,6 +22,7 @@ final class FakeAlerts: CallAlerting {
 final class AppEnvironmentTests: XCTestCase {
     /// Coordinator + env built exactly the way RecordingCoordinatorTests.makeCoordinator does.
     func makeEnv(db: AppDatabase, alerts: CallAlerting? = nil, root: URL? = nil,
+                 transcriber: Transcribing = FakeTranscriber(textForChunk: "final"),
                  plan: RecorderPlan = RecorderPlan()) throws -> AppEnvironment {
         let root = try root ?? makeRoot()
         let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -30,7 +32,7 @@ final class AppEnvironmentTests: XCTestCase {
         let coordinator = RecordingCoordinator(
             db: db,
             coaching: coaching,
-            transcriber: FakeTranscriber(textForChunk: "final"),
+            transcriber: transcriber,
             makeMicRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, stopGate: plan.stopGate) },
             makeSystemRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, stopGate: plan.stopGate) },
             recordingsRoot: root,
@@ -279,6 +281,108 @@ final class AppEnvironmentTests: XCTestCase {
 
         let after = try XCTUnwrap(db.sessionDetail(id: id))
         XCTAssertEqual(after.session.coachingStatus, .pending)
+    }
+
+    /// The point of planning a call: everything typed in beforehand — round type, notes,
+    /// role, and the grading criteria — is on the session row the finalize inserts, so it
+    /// reaches the first debrief instead of only a re-coach.
+    func testPlannedCallPreFillsTheStopFormAndReachesTheSession() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", role: "Staff iOS",
+                                                  roundType: .technical, scheduledDate: Date(),
+                                                  notes: "panel of two",
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        env.apply(plan)
+        XCTAssertEqual(env.recordCompany, "Acme")
+        XCTAssertEqual(env.recordRoundType, .technical)
+        XCTAssertEqual(env.recordCriteria, "GRADE_MARKER_XYZ")
+        // The role has no session column; it is folded into the notes the debrief reads.
+        XCTAssertEqual(env.recordNotes, "Role: Staff iOS — panel of two")
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+
+        let summaries = try db.allSessionSummaries()
+        XCTAssertEqual(summaries.count, 1)
+        let session = try XCTUnwrap(summaries.first?.session)
+        XCTAssertEqual(summaries.first?.companyName, "Acme")
+        XCTAssertEqual(session.roundType, .technical)
+        XCTAssertEqual(session.customInstructions, "GRADE_MARKER_XYZ")
+        XCTAssertEqual(session.contextNotes, "Role: Staff iOS — panel of two")
+        // Consumed once the finalize produced a session, and the form left clean.
+        try await waitUntil("the recorded plan was never consumed") { env.plannedCalls.isEmpty }
+        XCTAssertEqual(try db.plannedCalls().count, 0)
+        XCTAssertEqual(env.recordCriteria, "")
+    }
+
+    /// A finalize that fails deletes the session row it had inserted and keeps the audio for
+    /// recovery — so the plan has to survive too. Consuming it at stop would throw away the
+    /// company, round type and criteria of a call that still needs recovering.
+    func testFailedFinalizeKeepsThePlannedCallForTheRecovery() async throws {
+        let db = try AppDatabase.inMemory()
+        let root = try makeRoot()
+        // Every transcription throws -> no segments -> the finalize fails after inserting
+        // the session row, then compensates it away.
+        let env = try makeEnv(db: db, root: root, transcriber: ThrowingTranscriber())
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", roundType: .technical,
+                                                  scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+        env.apply(plan)
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+        // Let the consume follow-up run; it must decide *not* to delete.
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertTrue(try db.allSessionSummaries().isEmpty, "the orphaned session row must be gone")
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [plan.id],
+                       "a failed finalize consumed the plan, losing the criteria for the retry")
+
+        // And the recovery prompt's path can still apply and consume it.
+        let dir = try XCTUnwrap(env.recoverableSessions.first)
+        env.apply(plan)
+        await env.recover(dir, metadata: .init(company: "Acme", roundType: .technical, notes: "",
+                                               customInstructions: "GRADE_MARKER_XYZ"),
+                          plannedCallId: plan.id)
+        await env.coordinator.awaitAllFinalizes()
+        // Still no transcript possible with a throwing transcriber, so the plan stays.
+        XCTAssertEqual(try db.plannedCalls().count, 1)
+    }
+
+    func testContextNotesFoldsTheRoleInWithoutInventingSeparators() {
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "Staff iOS", notes: "panel of two"),
+                       "Role: Staff iOS — panel of two")
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "Staff iOS", notes: ""), "Role: Staff iOS")
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "  ", notes: "panel of two"), "panel of two")
+        XCTAssertEqual(AppEnvironment.contextNotes(role: "", notes: ""), "")
+    }
+
+    /// Editing and deleting go through the environment so the published list stays in step
+    /// with the table — a stale list would keep offering a plan that no longer exists.
+    func testPlannedCallEditsAndDeletesRepublishTheList() throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+
+        var draft = PlannedCallDraft()
+        draft.companyName = "Acme"
+        draft.roundType = .behavioral
+        env.savePlannedCall(draft)
+        XCTAssertEqual(env.plannedCalls.map(\.companyName), ["Acme"])
+
+        var edit = PlannedCallDraft(try XCTUnwrap(env.plannedCalls.first))
+        edit.companyName = "Acme Corp"
+        env.savePlannedCall(edit)
+        XCTAssertEqual(env.plannedCalls.map(\.companyName), ["Acme Corp"])
+        XCTAssertEqual(env.plannedCalls.count, 1, "editing a plan must update it, not add a second")
+
+        env.deletePlannedCall(id: try XCTUnwrap(env.plannedCalls.first?.id))
+        XCTAssertTrue(env.plannedCalls.isEmpty)
     }
 
     func testCallStartWhileRecordingDoesNotPostAlert() async throws {
