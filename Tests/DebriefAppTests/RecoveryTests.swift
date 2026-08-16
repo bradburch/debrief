@@ -6,9 +6,8 @@ import Store
 import CoachingEngine
 import Transcriber
 
-/// A `Transcribing` that sleeps briefly before returning, so tests can force a
-/// `finalizeFromDisk` call to be suspended mid-transcription -- long enough for
-/// a second concurrent call to observe the in-progress `.finalizing` phase.
+/// A `Transcribing` that sleeps briefly before returning, so tests can keep a finalize job
+/// suspended mid-transcription long enough for a second call to race it.
 private struct SlowFakeTranscriber: Transcribing {
     let textForChunk: String
     func transcribe(wavURL: URL) async throws -> [TimedText] {
@@ -19,13 +18,10 @@ private struct SlowFakeTranscriber: Transcribing {
 
 @MainActor
 final class RecoveryTests: XCTestCase {
-    func testFinalizeFromDiskRecoversOrphanedChunks() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    /// An orphaned session directory with one chunk on each stream.
+    private func seedOrphanDir(root: URL) throws -> URL {
         let dir = try RecordingStore.createSessionDirectory(root: root)
         try RecordingStore.writeManifest(.init(startedAt: Date(timeIntervalSinceNow: -300), finalized: false), in: dir)
-
-        // Orphaned chunks from a "crashed" session.
         let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
         for prefix in ["mic", "sys"] {
             let writer = try WavChunkWriter(directory: dir, prefix: prefix, chunkDuration: 1.0)
@@ -34,70 +30,82 @@ final class RecoveryTests: XCTestCase {
             try writer.append(buf)
             try writer.finish()
         }
+        return dir
+    }
 
-        let db = try AppDatabase.inMemory()
+    private func makeCoordinator(root: URL, db: AppDatabase,
+                                 transcriber: Transcribing = FakeTranscriber(textForChunk: "recovered")) throws
+        -> RecordingCoordinator {
         let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let prompts = PromptStore(directory: promptDir); try prompts.ensureDefaults()
-        let coordinator = RecordingCoordinator(
+        return RecordingCoordinator(
             db: db, coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
-            transcriber: FakeTranscriber(textForChunk: "recovered"),
+            transcriber: transcriber,
             makeMicRecorder: { FakeRecorder(writer: $0, seconds: 1) },
             makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 1) },
             recordingsRoot: root, chunkDuration: 1.0)
+    }
 
-        let id = await coordinator.finalizeFromDisk(
+    func testFinalizeFromDiskRecoversOrphanedChunks() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let dir = try seedOrphanDir(root: root)
+
+        let db = try AppDatabase.inMemory()
+        let coordinator = try makeCoordinator(root: root, db: db)
+
+        let job = try XCTUnwrap(coordinator.finalizeFromDisk(
             dir: dir, startedAt: Date(timeIntervalSinceNow: -300),
-            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered"))
-        let sessionId = try XCTUnwrap(id)
+            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered")))
+        // The directory is claimed the moment the job is queued, not when it starts running.
+        XCTAssertTrue(coordinator.activeDirs.contains(dir.lastPathComponent))
+
+        let finished = await coordinator.awaitFinalize(job)
+        let sessionId = try XCTUnwrap(finished)
         let detail = try XCTUnwrap(db.sessionDetail(id: sessionId))
         XCTAssertTrue(detail.segments.contains { $0.text.contains("recovered") })
         XCTAssertTrue(RecordingStore.unfinalizedSessions(root: root).isEmpty)
+        XCTAssertFalse(coordinator.activeDirs.contains(dir.lastPathComponent))
     }
 
-    /// finalizeFromDisk must refuse to run concurrently with (or during) a live
-    /// recording: two Recover taps, or a Recover while another flow is active,
-    /// must not both proceed and fight over `phase`/the on-disk session.
-    func testRecoveryRefusedWhileNotIdle() async throws {
+    /// Recovering an old directory while an unrelated session records is now ALLOWED — the
+    /// exclusive resource is a session directory, not the app. What must still be refused is
+    /// recovery of the directory the live recording is writing into.
+    func testRecoveryRunsDuringAnUnrelatedRecording() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-
-        // Seed an orphaned session directory to attempt recovery on.
-        let orphanDir = try RecordingStore.createSessionDirectory(root: root)
-        try RecordingStore.writeManifest(.init(startedAt: Date(timeIntervalSinceNow: -300), finalized: false), in: orphanDir)
-        let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
-        for prefix in ["mic", "sys"] {
-            let writer = try WavChunkWriter(directory: orphanDir, prefix: prefix, chunkDuration: 1.0)
-            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 16_000)!
-            buf.frameLength = 16_000
-            try writer.append(buf)
-            try writer.finish()
-        }
+        let orphanDir = try seedOrphanDir(root: root)
 
         let db = try AppDatabase.inMemory()
-        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let prompts = PromptStore(directory: promptDir); try prompts.ensureDefaults()
-        let coordinator = RecordingCoordinator(
-            db: db, coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
-            transcriber: FakeTranscriber(textForChunk: "recovered"),
-            makeMicRecorder: { FakeRecorder(writer: $0, seconds: 1) },
-            makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 1) },
-            recordingsRoot: root, chunkDuration: 1.0)
+        let coordinator = try makeCoordinator(root: root, db: db)
 
-        // A separate live recording is in flight (a different session dir, live
-        // under `root` too, but that's irrelevant -- what matters is `phase`).
         await coordinator.startRecording()
-        guard case .recording = coordinator.phase else {
-            return XCTFail("expected recording, got \(coordinator.phase)")
+        guard case .recording = coordinator.recordingPhase else {
+            return XCTFail("expected recording, got \(coordinator.recordingPhase)")
         }
+        let liveKey = try XCTUnwrap(coordinator.activeDirs.first)
 
-        let id = await coordinator.finalizeFromDisk(
+        let job = try XCTUnwrap(coordinator.finalizeFromDisk(
             dir: orphanDir, startedAt: Date(timeIntervalSinceNow: -300),
-            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered"))
-        XCTAssertNil(id, "finalizeFromDisk must refuse while phase is not .idle or .finalizing")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: orphanDir.path), "orphan dir must be left untouched")
+            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered")))
+        let recovered = await coordinator.awaitFinalize(job)
+        let recoveredId = try XCTUnwrap(recovered, "recovery of an unrelated dir must run during a recording")
+        XCTAssertNotNil(try db.sessionDetail(id: recoveredId))
 
-        // Clean up the live recording.
-        _ = await coordinator.stopAndFinalize(metadata: .init(company: "Acme", roundType: .technical, notes: ""))
+        // Still recording, untouched by the recovery.
+        guard case .recording = coordinator.recordingPhase else {
+            return XCTFail("recovery must not disturb the live recording, got \(coordinator.recordingPhase)")
+        }
+        // The live directory itself is off limits.
+        XCTAssertNil(coordinator.finalizeFromDisk(
+            dir: root.appendingPathComponent(liveKey, isDirectory: false),
+            startedAt: Date(), metadata: .init(company: "Nope", roundType: .technical, notes: "")),
+                     "the live session's own dir must never be recoverable")
+
+        let liveId = await coordinator.stopAndAwait(
+            metadata: .init(company: "Acme", roundType: .technical, notes: ""))
+        XCTAssertNotEqual(liveId, recoveredId)
+        XCTAssertEqual(try db.allSessionSummaries().count, 2)
     }
 
     /// A recovered directory with a manifest but no chunks on either stream must
@@ -110,80 +118,54 @@ final class RecoveryTests: XCTestCase {
         // No wav chunks written -- manifest only.
 
         let db = try AppDatabase.inMemory()
-        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let prompts = PromptStore(directory: promptDir); try prompts.ensureDefaults()
-        let coordinator = RecordingCoordinator(
-            db: db, coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
-            transcriber: FakeTranscriber(textForChunk: "recovered"),
-            makeMicRecorder: { FakeRecorder(writer: $0, seconds: 1) },
-            makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 1) },
-            recordingsRoot: root, chunkDuration: 1.0)
+        let coordinator = try makeCoordinator(root: root, db: db)
 
-        let id = await coordinator.finalizeFromDisk(
+        let job = try XCTUnwrap(coordinator.finalizeFromDisk(
             dir: dir, startedAt: Date(timeIntervalSinceNow: -300),
-            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered"))
-        XCTAssertNil(id)
+            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered")))
+        let zeroChunkResult = await coordinator.awaitFinalize(job)
+        XCTAssertNil(zeroChunkResult)
         XCTAssertTrue(try db.allSessionSummaries().isEmpty, "no session should be created for a zero-chunk recovery")
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path), "dir must be left for the user to Discard")
-        if case .idle = coordinator.phase {} else { XCTFail("expected phase back to .idle, got \(coordinator.phase)") }
+        XCTAssertNotNil(coordinator.finalizeJobs.first?.failure, "the early return must still finish the job")
+        // The early return releases the claim like every other exit.
+        XCTAssertTrue(coordinator.activeDirs.isEmpty)
+        if case .idle = coordinator.recordingPhase {} else {
+            XCTFail("recording must be unaffected, got \(coordinator.recordingPhase)")
+        }
     }
 
-    /// A second `finalizeFromDisk` call racing an in-flight one must be refused,
-    /// not just a call racing a live `.recording`. The old phase guard trusted
-    /// `.finalizing` as "delegated from stopAndFinalize, proceed" regardless of
-    /// *who* claimed it, so a second recovery call landing while the first was
-    /// still suspended mid-transcription would see phase == .finalizing and take
-    /// that same "proceed" branch, running concurrently with the first.
-    func testConcurrentRecoveryRefused() async throws {
+    /// The lock is the session directory. A second recovery of the SAME dir is refused;
+    /// recoveries of two different dirs both run (serially) and both complete.
+    func testSameDirRecoveryRefusedAndDifferentDirsBothComplete() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-
-        func seedOrphanDir() throws -> URL {
-            let dir = try RecordingStore.createSessionDirectory(root: root)
-            try RecordingStore.writeManifest(.init(startedAt: Date(timeIntervalSinceNow: -300), finalized: false), in: dir)
-            let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
-            for prefix in ["mic", "sys"] {
-                let writer = try WavChunkWriter(directory: dir, prefix: prefix, chunkDuration: 1.0)
-                let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 16_000)!
-                buf.frameLength = 16_000
-                try writer.append(buf)
-                try writer.finish()
-            }
-            return dir
-        }
-
-        let dir1 = try seedOrphanDir()
-        let dir2 = try seedOrphanDir()
+        let dir1 = try seedOrphanDir(root: root)
+        let dir2 = try seedOrphanDir(root: root)
 
         let db = try AppDatabase.inMemory()
-        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let prompts = PromptStore(directory: promptDir); try prompts.ensureDefaults()
-        let coordinator = RecordingCoordinator(
-            db: db, coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
-            transcriber: SlowFakeTranscriber(textForChunk: "recovered"),
-            makeMicRecorder: { FakeRecorder(writer: $0, seconds: 1) },
-            makeSystemRecorder: { FakeRecorder(writer: $0, seconds: 1) },
-            recordingsRoot: root, chunkDuration: 1.0)
+        let coordinator = try makeCoordinator(root: root, db: db,
+                                              transcriber: SlowFakeTranscriber(textForChunk: "recovered"))
+        let metadata = SessionMetadata(company: "Acme", roundType: .technical, notes: "recovered")
 
-        async let first: Int64? = coordinator.finalizeFromDisk(
-            dir: dir1, startedAt: Date(timeIntervalSinceNow: -300),
-            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered"))
+        let first = try XCTUnwrap(coordinator.finalizeFromDisk(
+            dir: dir1, startedAt: Date(timeIntervalSinceNow: -300), metadata: metadata))
+        XCTAssertNil(coordinator.finalizeFromDisk(dir: dir1, startedAt: Date(timeIntervalSinceNow: -300),
+                                                  metadata: metadata),
+                     "a second recovery of a claimed dir must be refused")
+        let second = try XCTUnwrap(coordinator.finalizeFromDisk(
+            dir: dir2, startedAt: Date(timeIntervalSinceNow: -300), metadata: metadata),
+                                   "a different dir is not blocked by the first claim")
 
-        // Let the first call claim `.finalizing` and suspend inside transcription
-        // (which sleeps 300ms) before the second call is issued.
-        try await Task.sleep(nanoseconds: 50_000_000)
-        guard case .finalizing = coordinator.phase else {
-            return XCTFail("expected first call to have claimed .finalizing by now, got \(coordinator.phase)")
-        }
-
-        let second = await coordinator.finalizeFromDisk(
-            dir: dir2, startedAt: Date(timeIntervalSinceNow: -300),
-            metadata: .init(company: "Acme", roundType: .technical, notes: "recovered"))
-        XCTAssertNil(second, "a second finalizeFromDisk racing an in-flight one must be refused")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: dir2.path), "dir2 must be left untouched")
-
-        let firstResult = await first
-        let firstId = try XCTUnwrap(firstResult, "the first, legitimately-delegated call must still succeed")
-        XCTAssertNotNil(try db.sessionDetail(id: firstId))
+        let firstResult = await coordinator.awaitFinalize(first)
+        let secondResult = await coordinator.awaitFinalize(second)
+        let firstId = try XCTUnwrap(firstResult)
+        let secondId = try XCTUnwrap(secondResult)
+        XCTAssertNotEqual(firstId, secondId)
+        XCTAssertEqual(try db.allSessionSummaries().count, 2)
+        XCTAssertTrue(coordinator.activeDirs.isEmpty)
+        // Re-claiming a dir is possible once its job has released the claim; there is
+        // nothing left to recover, though, because the audio is gone.
+        XCTAssertTrue(RecordingStore.unfinalizedSessions(root: root).isEmpty)
     }
 }

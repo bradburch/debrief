@@ -44,7 +44,14 @@ public enum Speaker: String, Codable, Sendable { case you = "YOU", them = "THEM"
 /// transcript-only, so there is no debrief to produce. It exists because `pending` and
 /// `failed` both mean "try again" — a transcript-only session left `pending` would be
 /// picked up by every "Retry pending debriefs" run forever and read as unfinished.
-public enum CoachingStatus: String, Codable, Sendable { case pending, complete, failed, skipped }
+///
+/// `running` means an LLM call is in flight right now. It exists because finalizes are no
+/// longer serialized behind one global phase: a debrief started by finalize can be running
+/// while the user hits "Retry pending debriefs", and without this the same session would be
+/// coached twice concurrently. It is deliberately NOT terminal — a crash mid-coach leaves
+/// the row `running` forever, so launch sweeps it back to `pending` (see
+/// `resetRunningCoaching`). Nothing else may treat it as done.
+public enum CoachingStatus: String, Codable, Sendable { case pending, running, complete, failed, skipped }
 
 /// The interviewer's would-I-advance call — the headline signal of a debrief.
 ///

@@ -90,23 +90,10 @@ struct RecordingBar: View {
     @EnvironmentObject var env: AppEnvironment
 
     var body: some View {
+        // Recording state on top, finalize jobs underneath — both at once, since a debrief
+        // in flight no longer blocks the next recording.
         VStack(alignment: .leading, spacing: 8) {
-            switch env.coordinator.phase {
-            case .idle:
-                HStack {
-                    if env.callDetected {
-                        Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
-                    } else {
-                        Text("No recording in progress").foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button {
-                        Task { await env.startRecording() }
-                    } label: {
-                        Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
-                    }
-                }
-            case .recording(let started):
+            if case .recording(let started) = env.coordinator.recordingPhase {
                 HStack {
                     Label("Recording \(started, style: .timer)", systemImage: "record.circle.fill")
                         .foregroundStyle(.red)
@@ -122,11 +109,27 @@ struct RecordingBar: View {
                 // two surfaces can't drift — this main-window bar used to lack the
                 // "From calendar" menu entirely because the form was duplicated by hand.
                 RecordingControls(axis: .horizontal)
-            case .finalizing(let status):
-                HStack { ProgressView().controlSize(.small); Text(status) }
-            case .failed(let message):
-                Label(message, systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(.red).font(.caption).lineLimit(3)
+            } else {
+                HStack {
+                    if case .failed(let message) = env.coordinator.recordingPhase {
+                        Label(message, systemImage: "xmark.octagon.fill")
+                            .foregroundStyle(.red).font(.caption).lineLimit(3)
+                    } else if env.callDetected {
+                        Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
+                    } else {
+                        Text("No recording in progress").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await env.startRecording() }
+                    } label: {
+                        Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
+                    }
+                }
+            }
+            if !env.coordinator.finalizeJobs.isEmpty {
+                Divider()
+                FinalizeJobsSection()
             }
         }
         .padding(10)

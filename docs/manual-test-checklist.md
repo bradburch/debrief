@@ -21,9 +21,10 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
    probe must not count Debrief's own capture). Metadata typed into the stop form after
    hanging up may be cut short by auto-stop (~10-15s window); sessions can be renamed
    afterwards.
-6. **Stop & Debrief**: fill Company/Round, click Stop & Debrief. Phase shows Transcribing →
-   Saving → Coaching, then idle. Session appears in the main window with a transcript where
-   your words are YOU and theirs are THEM, with sane timestamps.
+6. **Stop & Debrief**: fill Company/Round, click Stop & Debrief. Recording goes idle at once
+   and a job row runs Transcribing → Saving → Coaching before reporting the finished debrief
+   (dismissable). Session appears in the main window with a transcript where your words are
+   YOU and theirs are THEM, with sane timestamps.
 7. **Debrief**: with a valid API key in Settings, the debrief appears with scores, tags,
    highlights (click one — transcript scrolls), and action items.
 8. **No key**: remove the API key; record a short session; it stays "coaching…/failed" and
@@ -130,3 +131,31 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
       Failures here should leave sessions retryable, never block finalize.
     - Sign out of the CLI (`claude` logout) and confirm a debrief fails cleanly and stays
       retryable rather than hanging.
+19. **Record while the last debrief is still running** — the concurrency change, and the one
+    thing unit tests can only approximate. Record a short call, click Stop & Debrief, and
+    **immediately start a second recording** while the first still shows a job row
+    ("Acme — Transcribing…") in the popover and the main-window bar. Both surfaces must show
+    the recording state and the job at the same time; the menu-bar icon stays the red record
+    dot while recording and falls back to the hourglass once you stop with a job still going.
+    Then check what actually matters:
+    - **The two transcripts are not swapped.** Say something unmistakable and different in
+      each call ("banana banana" in the first, "helicopter helicopter" in the second) and
+      confirm each phrase lands in its own session, on the right speaker track. Both sessions
+      have a `mic-0000.wav`, so a cache regression shows up exactly here.
+    - **The first session's tail does not contain the second's opening.** Start the second
+      call the instant the first stops, and have the *other side* speak first in it. Then read
+      the END of session one's transcript: any of the second call's THEM audio appearing there
+      means a second capture opened while the first was still being torn down — the failure
+      mode that ordering `recordingPhase = .idle` after the recorder stops exists to prevent,
+      and the one a swapped-transcript check alone would not catch.
+    - Both sessions appear in Sessions with their own company, duration, and debrief, and the
+      list refreshes on its own as each job finishes.
+    - Recover an old directory from the recovery prompt *while* a recording is in progress:
+      allowed now, and it must not disturb the live recording.
+20. **Quit with a debrief in flight**: stop a recording and quit (popover Quit, ⌘Q from the
+    main window, or the Dock) while the job is still running. Debrief must ask before
+    quitting; "Wait" cancels the quit, "Quit anyway" exits and the next launch offers the
+    audio for recovery rather than losing it. Quitting with only *finished* job rows showing
+    must not prompt. Also: after a debrief that has already landed in the DB, relaunch and
+    confirm the session is **not** offered for recovery a second time (the session id stamped
+    into `manifest.json` is what prevents the duplicate).

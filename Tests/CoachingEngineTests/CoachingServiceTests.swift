@@ -132,6 +132,31 @@ final class CoachingServiceTests: XCTestCase {
         XCTAssertEqual(after.feedback?.proseDebrief, "Decent.", "previous debrief was lost")
     }
 
+    /// `running` is a claim, not a label. A finalize job coaching a session and a "Re-run
+    /// debriefs" sweep reaching the same one must not both bill a call and race to write the
+    /// same feedback row — the second caller stops at the claim.
+    func testCoachBailsWhileAnotherCallIsAlreadyRunningOnThatSession() async throws {
+        let id = try seedSession()
+        try db.setCoachingStatus(sessionId: id, .running)
+
+        try await CoachingService(db: db, prompts: prompts, llm: NeverCalledLLM()).coach(sessionId: id)
+
+        // Untouched: the call that owns the claim is the one that resolves it (or the launch
+        // sweep does, if that process died). Bailing must not mark it failed either — that
+        // would drag a perfectly healthy in-flight debrief into the error state.
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .running)
+        XCTAssertNil(try db.sessionDetail(id: id)?.feedback)
+    }
+
+    /// And the sweeps agree with it: a claimed session is not offered for retry.
+    func testRetrySweepSkipsASessionAlreadyBeingCoached() async throws {
+        let id = try seedSession()
+        try db.setCoachingStatus(sessionId: id, .running)
+        let errors = await CoachingService(db: db, prompts: prompts, llm: NeverCalledLLM()).retryAllPending()
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .running)
+    }
+
     func testSpuriousUrlCancelIsStillTreatedAsAFailure() async throws {
         // retryAllPending shares coachEach but has no Stop button. A URLError.cancelled with
         // no task cancellation is the network failing, not the user stopping — it must be

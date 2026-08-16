@@ -163,11 +163,16 @@ final class AppEnvironment: ObservableObject {
     func clearRecordMetadata() { recordCompany = ""; recordNotes = "" }
 
     /// Single stop path shared by the two Stop buttons and call-end auto-stop.
+    ///
+    /// The form is read and cleared *before* the await, not after: stopping now takes as long
+    /// as the recorders and the last in-flight decode, and the next interview can be started
+    /// and typed into during that window. Clearing afterwards wiped the company the user had
+    /// just entered for the new recording.
     func stopAndDebrief() async {
         let name = recordCompany.isEmpty ? "Unknown" : recordCompany
-        _ = await coordinator.stopAndFinalize(
-            metadata: .init(company: name, roundType: recordRoundType, notes: recordNotes))
+        let metadata = SessionMetadata(company: name, roundType: recordRoundType, notes: recordNotes)
         clearRecordMetadata()
+        _ = await coordinator.stopAndFinalize(metadata: metadata)
     }
 
     /// Single start path shared by the two Record buttons and the notification's
@@ -210,21 +215,56 @@ final class AppEnvironment: ObservableObject {
         // so its own @Published changes (phase, micLevel, systemLevel, streamWarning)
         // don't propagate to views observing AppEnvironment unless forwarded here.
         coordinator.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot)
+        // A finished job may have consumed a recoverable directory (or failed and kept one),
+        // and there is no longer a phase returning to .idle to hang that rescan off.
+        //
+        // `receive(on:)` is load-bearing, not tidiness: @Published delivers synchronously
+        // *inside* the mutation, which happens while runFinalize is still on the stack — its
+        // `defer` has not released the directory claim yet, so a rescan there would still see
+        // the dir as active and drop it. A failed finalize would then keep telling the user to
+        // discard its audio from a recovery prompt that no longer lists it.
+        coordinator.$finalizeCompletions.dropFirst().receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshRecoverables() }.store(in: &cancellables)
+        // Launch-time reclaim of debriefs whose process died mid-call. `running` is excluded
+        // from every sweep, so without this they would never be retried. Safe here because
+        // nothing in this process can be coaching yet.
+        _ = try? db.resetRunningCoaching()
+        refreshRecoverables()
         startTimers()
     }
 
+    /// Directories a crashed launch left behind, minus the ones this launch is already using.
+    /// Two filters, and they answer different questions: `activeDirs` is the coordinator's
+    /// authority on what is claimed *right now*, and the manifest's session id catches a dir
+    /// whose transcript already landed in a *previous* launch — recovering that would insert
+    /// the same interview twice.
+    ///
+    /// The second filter asks whether that session has a *transcript*, not whether the row
+    /// exists: a crash between the session insert and the segment insert leaves an empty row,
+    /// and treating that as "already recovered" would hide the only remaining copy of the
+    /// interview — the audio — behind a row the coaching sweeps skip for having no transcript.
+    func refreshRecoverables() {
+        let active = coordinator.activeDirs
+        recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot).filter { dir in
+            guard !active.contains(dir.lastPathComponent) else { return false }
+            guard let id = RecordingStore.readManifest(in: dir)?.sessionId else { return true }
+            return (try? db.sessionHasTranscript(id: id)) != true
+        }
+    }
+
     /// Re-transcribes and persists an orphaned session directory (left behind by a
-    /// crash) via the coordinator's finalizeFromDisk, then re-scans for leftovers.
+    /// crash) via the coordinator's finalizeFromDisk. Returns once the job is queued and
+    /// the directory claimed — the rescan below drops it from the banner immediately, and
+    /// the coordinator's completion signal rescans again when the job settles.
     func recover(_ dir: URL, metadata: SessionMetadata) async {
         let started = RecordingStore.readManifest(in: dir)?.startedAt ?? Date()
-        _ = await coordinator.finalizeFromDisk(dir: dir, startedAt: started, metadata: metadata)
-        recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot)
+        _ = coordinator.finalizeFromDisk(dir: dir, startedAt: started, metadata: metadata)
+        refreshRecoverables()
     }
 
     func discard(_ dir: URL) {
         try? RecordingStore.deleteSession(at: dir)
-        recoverableSessions = RecordingStore.unfinalizedSessions(root: recordingsRoot)
+        refreshRecoverables()
     }
 
     // nonisolated so key resolution can run off the main thread; retained defensively —
@@ -304,6 +344,8 @@ final class AppEnvironment: ObservableObject {
             let env = AppEnvironment(db: db, prompts: prompts, coaching: coaching,
                                      coordinator: coordinator, alerts: alerts,
                                      recordingsRoot: loc.audio)
+            // Lets applicationShouldTerminate see in-flight finalize jobs; see AppDelegate.
+            AppDelegate.environment = env
             alerts.onRecord = { [weak env] in
                 guard let env else { return }
                 Task { await env.startRecording() }
@@ -340,13 +382,15 @@ final class AppEnvironment: ObservableObject {
         switch event {
         case .callLikelyStarted:
             callDetected = true
-            // Known gap: a call that starts during .finalizing never re-fires the alert
-            // once idle (the detector is already inCall); the menu-bar icon still shows it.
-            if case .idle = coordinator.phase { alerts?.callDetected() }
+            // Keyed on recording state alone: an earlier session still finalizing no longer
+            // suppresses this alert, which closes the documented gap where a call starting
+            // during finalize was never offered (the detector is already inCall by the time
+            // finalize ends, so it never re-fired).
+            if case .idle = coordinator.recordingPhase { alerts?.callDetected() }
         case .callLikelyEnded:
             callDetected = false
             alerts?.clear()
-            if case .recording = coordinator.phase { await stopAndDebrief() }
+            if case .recording = coordinator.recordingPhase { await stopAndDebrief() }
         }
     }
 }
