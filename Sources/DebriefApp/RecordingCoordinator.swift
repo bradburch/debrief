@@ -271,28 +271,32 @@ public final class RecordingCoordinator: ObservableObject {
     /// export: recording is startable again as soon as this returns. Await the result with
     /// `awaitFinalize(_:)`.
     ///
-    /// The order below is the contract:
-    /// 1. claim the directory and drop `recordingPhase` to `.idle` — both before the first
-    ///    `await`, so the claim is atomic and the next recording can start immediately;
-    /// 2. take the whole `LiveSession` out of `live` in the same breath, so nothing that
-    ///    resumes later can read or write it;
-    /// 3. cancel the live loop and *await* it, so no transcription is in flight;
-    /// 4. stop the recorders, flushing the last partial chunk to disk;
-    /// 5. enqueue the finalize with a by-value copy of the transcript cache.
+    /// The order below is the contract, and the order matters in both directions:
+    /// 1. claim the directory and cancel the live loop — before the first `await`, so the
+    ///    claim is atomic;
+    /// 2. stop the recorders, flushing the last partial chunk, **while `recordingPhase` still
+    ///    says `.recording`**. Publishing `.idle` any earlier frees the main actor for the
+    ///    duration of those stops, and `startRecording` would open a second mic and system
+    ///    tap while this session's are still capturing — the first session's `sys-*.wav`
+    ///    keeps growing past its own stop, and `runFinalize` re-reads the directory from
+    ///    disk, so the *next* interview's opening lands in this one's THEM track;
+    /// 3. snapshot the transcript cache, then release: `.idle` and `live = nil` together;
+    /// 4. await the cancelled live loop, so no transcription is in flight at hand-off;
+    /// 5. enqueue the finalize with the by-value cache.
     ///
-    /// A chunk the live loop was transcribing at step 2 is dropped from that copy — its write
-    /// lands nowhere, by design — and simply gets transcribed again in the job. Correct but
-    /// one chunk slower, which is the right trade against letting a late write pick a session.
+    /// Step 4 can take as long as one chunk decode — WhisperKit decodes are not
+    /// cancellation-responsive — but recording is already startable by then, and the
+    /// directory is claimed throughout, so it is neither offered for recovery nor visible as
+    /// a job for that moment. A chunk the loop was decoding is dropped from the snapshot: its
+    /// write lands nowhere by design, and the job simply decodes it again. One chunk slower,
+    /// against never letting a late write pick a session.
     @discardableResult
     public func stopAndFinalize(metadata: SessionMetadata) async -> UUID? {
         guard case .recording(let started) = recordingPhase, let session = live else { return nil }
         guard !claimedDirs.contains(session.key) else { return nil }
         claimedDirs.insert(session.key)
-        recordingPhase = .idle
-        live = nil
-
         session.liveTask?.cancel()
-        await session.liveTask?.value
+
         // stop() failures (e.g. a final flush that couldn't write its last partial
         // chunk) are logged, not thrown: whatever chunks DID make it to disk before
         // the failure are still the best transcript data available, and surfacing a
@@ -301,12 +305,20 @@ public final class RecordingCoordinator: ObservableObject {
         do { try await session.micRecorder.stop() } catch { logger.error("mic recorder stop() failed: \(error, privacy: .public)") }
         do { try await session.sysRecorder.stop() } catch { logger.error("sys recorder stop() failed: \(error, privacy: .public)") }
 
+        // Fresher than the copy taken at the guard — the live loop may have cached another
+        // chunk during the stops above — and still unambiguously this session's, because
+        // `.recording` held until now.
+        let cache = live?.chunkTranscripts ?? session.chunkTranscripts
+        recordingPhase = .idle
+        live = nil
+        await session.liveTask?.value
+
         // After stop(), on-disk chunks and the writers' completedChunks are
         // identical, so runFinalize (which reads via RecordingStore) produces
         // the same result here as it does for a recovered (crashed) session.
         return enqueueFinalize(dir: session.dir, startedAt: started, metadata: metadata,
                                durationSeconds: Int(Date().timeIntervalSince(started)),
-                               cache: session.chunkTranscripts)
+                               cache: cache)
     }
 
     /// Crash-recovery entry point for a session directory left behind by a previous,
@@ -357,6 +369,12 @@ public final class RecordingCoordinator: ObservableObject {
         jobTasks[id] = nil
     }
 
+    /// Queues one finalize behind the others. Note the claim on `dir` is held from *enqueue*,
+    /// not from the moment this job starts running: a job stuck at the head of the queue
+    /// (worst case an LLM call sitting out its client's 600s timeout) delays every job behind
+    /// it and keeps their directories claimed — so not recoverable — for that whole time.
+    /// Deliberate: those directories are going to be finalized, just not yet, and offering
+    /// them for recovery meanwhile would be offering a second flow over the same audio.
     private func enqueueFinalize(dir: URL, startedAt: Date, metadata: SessionMetadata,
                                  durationSeconds: Int?, cache: [String: [TimedText]]) -> UUID {
         let job = FinalizeJob(id: UUID(), dir: dir, company: metadata.company, status: "Waiting…")
@@ -490,12 +508,13 @@ public final class RecordingCoordinator: ObservableObject {
             if let id = insertedSessionId, !segmentsInserted {
                 do {
                     try db.deleteSession(id: id)
-                    // The stamp has to go with the row, or recovery would skip this dir
-                    // forever on the strength of a session that no longer exists.
-                    try? RecordingStore.writeManifest(.init(startedAt: startedAt, finalized: false), in: dir)
                 } catch {
                     logger.error("failed to delete orphaned session \(id, privacy: .public): \(error, privacy: .public)")
                 }
+                // Outside the do/catch on purpose: the stamp must go even when the delete
+                // fails. A stamp naming a row that isn't there — or one that is there with no
+                // transcript — would otherwise keep suppressing recovery of this directory.
+                try? RecordingStore.writeManifest(.init(startedAt: startedAt, finalized: false), in: dir)
             }
             finishJob(jobId, sessionId: nil, status: "Failed",
                       failure: "Finalize failed: \(error.localizedDescription). Audio kept at \(dir.path)")

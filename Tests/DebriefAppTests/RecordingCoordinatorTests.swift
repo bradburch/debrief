@@ -13,6 +13,9 @@ final class RecorderPlan: @unchecked Sendable {
     /// Audio written at `stop()` rather than `start()`, standing in for the chunks that only
     /// exist once the recording ends — the ones a finalize must transcribe itself.
     var tailSeconds: Double = 0
+    /// When set, recorders built from this plan park in `stop()` on the "stop" token, so a
+    /// test can hold a session open in the middle of stopping.
+    var stopGate: Gate?
 }
 
 final class FakeRecorder: StreamRecorder, @unchecked Sendable {
@@ -20,12 +23,15 @@ final class FakeRecorder: StreamRecorder, @unchecked Sendable {
     let writer: WavChunkWriter
     let seconds: Double
     let tailSeconds: Double
-    init(writer: WavChunkWriter, seconds: Double, tailSeconds: Double = 0) {
+    let stopGate: Gate?
+    init(writer: WavChunkWriter, seconds: Double, tailSeconds: Double = 0, stopGate: Gate? = nil) {
         self.writer = writer; self.seconds = seconds; self.tailSeconds = tailSeconds
+        self.stopGate = stopGate
     }
 
     func start() async throws { try write(seconds) }
     func stop() async throws {
+        await stopGate?.wait("stop")
         try write(tailSeconds)
         try writer.finish()
     }
@@ -50,26 +56,26 @@ struct FakeTranscriber: Transcribing {
     }
 }
 
-/// Parks transcriptions of one session's chunks until the test releases them, so the
-/// interleaving of two overlapping sessions is exact rather than merely likely. An actor
-/// rather than a flag plus sleeps, for the same reason.
-actor TranscribeGate {
-    private var heldDir: String?
+/// Parks callers on a token until the test releases them, so the interleaving under test is
+/// exact rather than merely likely. An actor rather than flags plus sleeps, for that reason.
+/// Tokens are a session directory (transcription) or "stop" (recorder shutdown).
+actor Gate {
+    private var held: Set<String> = []
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     var waitingCount: Int { waiters.count }
 
-    /// Every subsequent transcription of a chunk in `dir` parks until `open()`.
-    func hold(dir: String) { heldDir = dir }
+    /// Everything arriving on `token` from here on parks until `open()`.
+    func hold(_ token: String) { held.insert(token) }
 
     func open() {
-        heldDir = nil
+        held = []
         for waiter in waiters { waiter.resume() }
         waiters = []
     }
 
-    func wait(dir: String) async {
-        guard dir == heldDir else { return }
+    func wait(_ token: String) async {
+        guard held.contains(token) else { return }
         await withCheckedContinuation { waiters.append($0) }
     }
 }
@@ -80,11 +86,11 @@ actor TranscribeGate {
 /// fake that echoed only `lastPathComponent` would produce identical text for two different
 /// sessions and pass a cross-contamination test that a shared transcript cache would fail.
 struct DirEchoTranscriber: Transcribing {
-    var gate: TranscribeGate?
+    var gate: Gate?
 
     func transcribe(wavURL: URL) async throws -> [TimedText] {
         let dir = wavURL.deletingLastPathComponent().lastPathComponent
-        await gate?.wait(dir: dir)
+        await gate?.wait(dir)
         return [TimedText(start: 1.0, text: "seg \(dir) \(wavURL.lastPathComponent)")]
     }
 }
@@ -139,8 +145,10 @@ final class RecordingCoordinatorTests: XCTestCase {
             db: db,
             coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
             transcriber: transcriber,
-            makeMicRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, tailSeconds: plan.tailSeconds) },
-            makeSystemRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, tailSeconds: plan.tailSeconds) },
+            makeMicRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, tailSeconds: plan.tailSeconds,
+                                           stopGate: plan.stopGate) },
+            makeSystemRecorder: { FakeRecorder(writer: $0, seconds: plan.seconds, tailSeconds: plan.tailSeconds,
+                                               stopGate: plan.stopGate) },
             recordingsRoot: root,
             chunkDuration: 1.0,
             deleteAudioOnSuccess: deleteAudio)
@@ -355,7 +363,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         let plan = RecorderPlan()
         plan.seconds = 2       // chunks 0-1, cached by A's live pass below
         plan.tailSeconds = 4   // chunks 2-5, on disk only at stop() — A's finalize transcribes these
-        let gate = TranscribeGate()
+        let gate = Gate()
         let coordinator = try makeCoordinator(
             root: root, db: db, deleteAudio: false,
             transcriber: DirEchoTranscriber(gate: gate), plan: plan)
@@ -364,7 +372,7 @@ final class RecordingCoordinatorTests: XCTestCase {
         let dirA = try XCTUnwrap(coordinator.activeDirs.first)
         await coordinator.transcribeNewChunks()
         // From here A's own chunks park, so its finalize stalls part-way through.
-        await gate.hold(dir: dirA)
+        await gate.hold(dirA)
         let queuedA = await coordinator.stopAndFinalize(
             metadata: .init(company: "Acme", roundType: .behavioral, notes: ""))
         let jobA = try XCTUnwrap(queuedA)
@@ -421,14 +429,14 @@ final class RecordingCoordinatorTests: XCTestCase {
         let db = try AppDatabase.inMemory()
         let plan = RecorderPlan()
         plan.seconds = 1
-        let gate = TranscribeGate()
+        let gate = Gate()
         let coordinator = try makeCoordinator(
             root: root, db: db, deleteAudio: false,
             transcriber: DirEchoTranscriber(gate: gate), plan: plan)
 
         await coordinator.startRecording()
         let dirA = try XCTUnwrap(coordinator.activeDirs.first)
-        await gate.hold(dir: dirA)
+        await gate.hold(dirA)
         let parked = Task { await coordinator.transcribeNewChunks() }
         for _ in 0..<1000 where await gate.waitingCount == 0 { await Task.yield() }
         let parkedCount = await gate.waitingCount
@@ -486,8 +494,13 @@ final class RecordingCoordinatorTests: XCTestCase {
         let failed = try XCTUnwrap(coordinator.finalizeJobs.first { $0.id == jobA })
         XCTAssertNotNil(failed.failure)
         XCTAssertTrue(try db.allSessionSummaries().isEmpty, "the orphaned session row must be removed")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(dirA).path),
+        let keptDir = root.appendingPathComponent(dirA, isDirectory: false)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keptDir.path),
                       "audio must be kept for a failed finalize")
+        // The stamp goes with the row it named. Left behind, it would tell every future
+        // recovery scan that this directory had already become a session.
+        XCTAssertNil(RecordingStore.readManifest(in: keptDir)?.sessionId,
+                     "a compensated-away session must not leave its id stamped on the dir")
         XCTAssertFalse(coordinator.activeDirs.contains(dirA), "a failed job still releases its claim")
 
         // And recording keeps working afterwards.
@@ -500,6 +513,58 @@ final class RecordingCoordinatorTests: XCTestCase {
         }
         _ = await coordinator.stopAndFinalize(metadata: .init(company: "Initech", roundType: .behavioral, notes: ""))
         await coordinator.awaitAllFinalizes()
+    }
+
+    /// Stopping is not instant — the recorders have a final flush, and the mic and the system
+    /// tap are torn down one after the other. A start attempted inside that window must be
+    /// refused, which means `recordingPhase` cannot go `.idle` until the recorders are down.
+    ///
+    /// If it goes idle first, the main actor is free for the whole teardown and a second mic
+    /// and system tap open while the first pair is still capturing: session A's `sys-*.wav`
+    /// keeps growing after A stopped, and `runFinalize` re-reads A's directory from disk — so
+    /// the opening of interview B is transcribed into interview A's THEM track.
+    func testStartRefusedWhileTheRecordersAreStillStopping() async throws {
+        let root = try makeRoot()
+        let db = try AppDatabase.inMemory()
+        let gate = Gate()
+        let plan = RecorderPlan()
+        plan.seconds = 1
+        plan.stopGate = gate
+        await gate.hold("stop")
+        let coordinator = try makeCoordinator(root: root, db: db, deleteAudio: false, plan: plan)
+
+        await coordinator.startRecording()
+        let dirA = try XCTUnwrap(coordinator.activeDirs.first)
+        plan.stopGate = nil  // only session A's recorders are held
+
+        let stopping = Task { await coordinator.stopAndFinalize(
+            metadata: .init(company: "Acme", roundType: .behavioral, notes: "")) }
+        for _ in 0..<1000 where await gate.waitingCount == 0 { await Task.yield() }
+        let parked = await gate.waitingCount
+        XCTAssertEqual(parked, 1, "the stop never reached the recorder teardown")
+
+        // The main actor is free right now — this is the window the bug lived in.
+        await coordinator.startRecording()
+        guard case .recording = coordinator.recordingPhase else {
+            return XCTFail("session A must still count as recording until its recorders are down")
+        }
+        XCTAssertEqual(coordinator.activeDirs, [dirA], "a second capture started while A was still stopping")
+        let dirs = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        XCTAssertEqual(dirs.count, 1, "a second session directory was opened mid-stop")
+
+        await gate.open()
+        let queued = await stopping.value
+        let jobA = try XCTUnwrap(queued)
+        let idA = await coordinator.awaitFinalize(jobA)
+        XCTAssertNotNil(idA)
+
+        // And once the stop really is finished, recording starts normally again.
+        await coordinator.startRecording()
+        guard case .recording = coordinator.recordingPhase else {
+            return XCTFail("recording must be startable once the stop completes")
+        }
+        XCTAssertEqual(coordinator.activeDirs.count, 1)
+        _ = await coordinator.stopAndAwait(metadata: .init(company: "Globex", roundType: .behavioral, notes: ""))
     }
 
     /// Two Record taps in the same frame. The claim is taken before the first `await`, so
