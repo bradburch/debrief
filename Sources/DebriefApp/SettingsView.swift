@@ -132,16 +132,21 @@ struct SettingsView: View {
             Section("Coaching") {
                 // Disabled while a finalize job is running: that job's own debrief is part of
                 // what "pending" means until it lands, and a sweep started now would report a
-                // confusing count for work already in flight.
+                // confusing count for work already in flight. Gated on a re-run too, and for
+                // the same reason the re-run is gated on this one: whichever sweep gets there
+                // second hits `coach()`'s claim and bails, then reports the session as handled
+                // when nothing of its own ran.
                 Button("Retry pending debriefs") {
                     Task {
                         let errors = await env.coaching.retryAllPending()
                         retryResult = errors.isEmpty ? "All caught up." : "\(errors.count) failed — see sessions list."
                     }
                 }
-                .disabled(env.coordinator.hasActiveJobs)
-                if env.coordinator.hasActiveJobs {
-                    Text("Finishing a debrief — try again in a moment.")
+                .disabled(env.coordinator.hasActiveJobs || env.isRecoaching)
+                if env.coordinator.hasActiveJobs || env.isRecoaching {
+                    Text(env.isRecoaching
+                         ? "Re-running debriefs — try again when that finishes."
+                         : "Finishing a debrief — try again in a moment.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let retryResult { Text(retryResult).font(.caption) }

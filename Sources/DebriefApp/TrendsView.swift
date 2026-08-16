@@ -91,8 +91,20 @@ struct TrendsView: View {
                         // dimension multiplies by the number of round types, which on a real
                         // database was 48 lines and a rainbow legend. The ambiguity is worth
                         // one sentence, not forty-eight series.
-                        if roundFilter == nil {
-                            Text("`technical_depth` and `quantified_impact` are declared by two round types with different definitions, so those lines mix both. Filter to a round type to compare like with like.")
+                        //
+                        // Derived from the data on screen, never a hardcoded pair of names:
+                        // the rubric is markdown a user can edit, so which dimensions overlap
+                        // is a property of *their* prompts folder. The old fixed sentence
+                        // named two dimensions a custom round type may not even declare, and
+                        // stayed on screen when nothing overlapped at all.
+                        let mixed = Self.dimensionsSharedAcrossRounds(
+                            in: scorePoints.map { ($0.dimension, $0.roundType) })
+                        if roundFilter == nil, !mixed.isEmpty {
+                            Text("\(mixed.map { "`\($0)`" }.joined(separator: ", ")) "
+                                 + "\(mixed.count == 1 ? "is scored by" : "are each scored by") "
+                                 + "more than one round type, with different definitions, so "
+                                 + "\(mixed.count == 1 ? "that line mixes" : "those lines mix") them. "
+                                 + "Filter to a round type to compare like with like.")
                                 .font(.caption).foregroundStyle(.secondary)
                                 .padding(.top, 4)
                         }
@@ -105,6 +117,21 @@ struct TrendsView: View {
 
     private var identifiableScorePoints: [IdentifiableScorePoint] {
         scorePoints.map(IdentifiableScorePoint.init)
+    }
+
+    /// Dimension keys that appear under more than one round type in `points` — the lines on
+    /// the unfiltered chart that mix two rubrics' definitions of the same word.
+    ///
+    /// Static and internal so it can be tested without driving SwiftUI: the sentence it feeds
+    /// is a factual claim about the user's data, and the version that hardcoded two names was
+    /// wrong for anyone whose prompts folder differs from the shipped one. It takes the two
+    /// fields it uses rather than `[ScorePoint]` because that type's memberwise init is
+    /// internal to Store — widening a public API to build fixtures is the wrong trade.
+    static func dimensionsSharedAcrossRounds(
+        in points: [(dimension: String, roundType: RoundType)]) -> [String] {
+        var rounds: [String: Set<RoundType>] = [:]
+        for p in points { rounds[p.dimension, default: []].insert(p.roundType) }
+        return rounds.filter { $0.value.count > 1 }.keys.sorted()
     }
 
     private func reload() {

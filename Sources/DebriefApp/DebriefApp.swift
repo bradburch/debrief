@@ -80,9 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// NOT make the `Window` scene open at launch (measured — the app still starts at zero
     /// windows) and the popover's content is built lazily on first click.
     ///
-    /// `MainWindow` used to re-register on appear. That was strictly worse than nothing: it
-    /// replaced a closure good for the life of the process with one captured from a scene
-    /// that can be torn down, for no gain, since the label's copy is always valid.
+    /// `MainWindow` and later `MenuBarView` both used to re-register on appear. That was
+    /// strictly worse than nothing: it replaced a closure good for the life of the process
+    /// with one captured from a scene that can be torn down, for no gain, since the label's
+    /// copy is always valid.
     @MainActor static var openMainWindow: (() -> Void)?
 
     /// Bring the main window up and focused, creating it if the user closed it.
@@ -122,16 +123,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let coordinator = Self.environment?.coordinator else { return .terminateNow }
         let pending = coordinator.finalizeJobs.filter { !$0.isFinished }
-        guard !pending.isEmpty else { return .terminateNow }
+        var isRecording = false
+        if case .recording = coordinator.recordingPhase { isRecording = true }
+        // A live recording is the *more* destructive quit of the two, and it used to exit
+        // without a word: ⌘Q mid-interview abandons the chunk still buffered in memory (up to
+        // ~30s of the call) and every field typed into the stop-form, and there is no stop to
+        // flush them. Recording and finalizing are concurrent states now, so both can be true.
+        guard isRecording || !pending.isEmpty else { return .terminateNow }
 
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = pending.count == 1
+        let jobsText = pending.count == 1
             ? "Still finishing one debrief"
             : "Still finishing \(pending.count) debriefs"
-        alert.informativeText = "Quitting now stops the transcript and debrief part-way. "
-            + "The audio is kept, and Debrief offers to recover it on the next launch."
-        alert.addButton(withTitle: "Wait")
+        alert.messageText = isRecording
+            ? (pending.isEmpty ? "A recording is still in progress"
+                               : "A recording is in progress, and \(jobsText.lowercased())")
+            : jobsText
+        var informative: [String] = []
+        if isRecording {
+            informative.append("Quitting now ends the interview without stopping it: the last few "
+                + "seconds that haven't been written to disk yet are lost, along with the company "
+                + "and notes in the stop form. Everything already on disk is kept.")
+        }
+        if !pending.isEmpty {
+            informative.append("Quitting now stops the transcript and debrief part-way. "
+                + "The audio is kept.")
+        }
+        informative.append("Debrief offers the audio for recovery on the next launch.")
+        alert.informativeText = informative.joined(separator: " ")
+        alert.addButton(withTitle: isRecording ? "Keep recording" : "Wait")
         alert.addButton(withTitle: "Quit anyway")
         NSApp.activate(ignoringOtherApps: true)
         return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow

@@ -104,6 +104,22 @@ final class TranscriptOnlyRoundTests: XCTestCase {
         XCTAssertNil(detail.feedback, "a transcript-only round stored a debrief")
     }
 
+    /// The reason `coach()` claims the session BEFORE it checks for a transcript-only round.
+    /// The round type can change while a debrief is in flight (SessionsView's type picker
+    /// persists the new type and re-coaches on it), and stamping `skipped` over a live claim
+    /// would leave the call still running — which then writes `complete` plus a debrief the
+    /// round type says must not exist.
+    func testTranscriptOnlyRoundDoesNotStampOverALiveClaim() async throws {
+        let id = try seedSession(roundType: .mockInterview)
+        let previous = try db.claimCoaching(sessionId: id)   // a finalize job's call, in flight
+        XCTAssertEqual(previous, .pending)
+
+        try await CoachingService(db: db, prompts: prompts, llm: NeverCalledLLM()).coach(sessionId: id)
+
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .running,
+                       "the transcript-only path overwrote a claim it does not own")
+    }
+
     /// `skipped` is terminal. If it were treated like `pending`, every "Retry pending
     /// debriefs" would offer practice sessions forever.
     func testSkippedSessionsAreNotOfferedForRetryOrRecoach() async throws {

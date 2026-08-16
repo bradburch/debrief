@@ -49,6 +49,33 @@ final class FakeRecorder: StreamRecorder, @unchecked Sendable {
     }
 }
 
+/// Counts `stop()` calls across the recorders one test builds, so it can assert that a start
+/// which failed part-way did not leave a live one behind.
+final class StopSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var stops: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func record() { lock.lock(); count += 1; lock.unlock() }
+}
+
+/// Starts cleanly, writes nothing, and reports being stopped.
+final class SpyRecorder: StreamRecorder, @unchecked Sendable {
+    var onLevel: (@Sendable (Float) -> Void)?
+    let writer: WavChunkWriter
+    let spy: StopSpy
+    init(writer: WavChunkWriter, spy: StopSpy) { self.writer = writer; self.spy = spy }
+    func start() async throws {}
+    func stop() async throws { spy.record(); try writer.finish() }
+}
+
+/// The system tap being refused: `start()` throws after the other stream is already live.
+final class FailingStartRecorder: StreamRecorder, @unchecked Sendable {
+    struct Refused: Error {}
+    var onLevel: (@Sendable (Float) -> Void)?
+    func start() async throws { throw Refused() }
+    func stop() async throws {}
+}
+
 struct FakeTranscriber: Transcribing {
     let textForChunk: String
     func transcribe(wavURL: URL) async throws -> [TimedText] {
@@ -608,6 +635,38 @@ final class RecordingCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(coordinator.activeDirs.count, 1)
         _ = await coordinator.stopAndAwait(metadata: .init(company: "Globex", roundType: .behavioral, notes: ""))
+    }
+
+    /// A start that fails half-way — in practice the system tap being refused after the mic
+    /// engine is already running — must tear the started half down. `.failed` is a startable
+    /// state, so a retry that leaves the first mic engine live stacks orphaned recorders that
+    /// nothing holds a reference to and nothing can stop, all still capturing.
+    func testAFailedStartStopsTheRecorderThatDidStart() async throws {
+        let root = try makeRoot()
+        let db = try AppDatabase.inMemory()
+        let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let prompts = PromptStore(directory: promptDir)
+        try prompts.ensureDefaults()
+        let micSpy = StopSpy()
+        let coordinator = RecordingCoordinator(
+            db: db,
+            coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
+            transcriber: FakeTranscriber(textForChunk: "final"),
+            makeMicRecorder: { SpyRecorder(writer: $0, spy: micSpy) },
+            makeSystemRecorder: { _ in FailingStartRecorder() },
+            recordingsRoot: root,
+            chunkDuration: 1.0)
+
+        await coordinator.startRecording()
+
+        guard case .failed = coordinator.recordingPhase else {
+            return XCTFail("expected a failed start, got \(coordinator.recordingPhase)")
+        }
+        XCTAssertEqual(micSpy.stops, 1, "the mic recorder was abandoned still running")
+
+        // And a retry — legal from `.failed` — does not stack a second live recorder on it.
+        await coordinator.startRecording()
+        XCTAssertEqual(micSpy.stops, 2, "a retry left the previous attempt's recorder running")
     }
 
     /// Two Record taps in the same frame. The claim is taken before the first `await`, so

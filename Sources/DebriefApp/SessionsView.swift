@@ -198,6 +198,10 @@ struct SessionDetailView: View {
     @State private var regenerating = false
     @State private var criteria = ""
     @State private var regenerateError: String?
+    /// Not an error: what to say when `coach()` bailed because another debrief already holds
+    /// this session's claim. Separate from `regenerateError` so it doesn't render in red —
+    /// nothing went wrong, the work is simply someone else's.
+    @State private var regenerateNote: String?
     // Snapshot the selectable round types once per session view. availableRoundTypes() does a
     // directory listing, and debriefPane re-renders on every criteria keystroke — recomputing
     // it per render would list the prompts dir on every keypress.
@@ -242,6 +246,7 @@ struct SessionDetailView: View {
     private func regenerate() {
         regenerating = true
         regenerateError = nil
+        regenerateNote = nil
         Task {
             do {
                 try await env.coaching.coach(sessionId: sessionId)
@@ -250,6 +255,16 @@ struct SessionDetailView: View {
             }
             // Guard the reload: a failed read must not blank out the pane.
             if let fresh = try? env.db.sessionDetail(id: sessionId) { detail = fresh }
+            // `coach()` returns silently when another debrief already holds the session's
+            // claim (a finalize job for this very recording, or a Re-run sweep). The button
+            // would otherwise flip back to "Regenerate" with the OLD debrief still on screen,
+            // reading as "re-ran, nothing changed". The disabled state below hides most of
+            // this, but it is computed from a `detail` loaded on appear — a job that starts
+            // coaching afterwards is invisible to it, so the honest message still has to exist.
+            if regenerateError == nil, detail?.session.coachingStatus == .running {
+                regenerateNote = "A debrief for this session is already being written — "
+                    + "this pane will show it once that finishes."
+            }
             regenerating = false
             onRenamed?()  // refresh the sidebar row's score/advancement/type badge post-coach
         }
@@ -314,7 +329,10 @@ struct SessionDetailView: View {
                     }
                     .labelsHidden()
                     .font(.body)              // don't inherit the title2/bold below
-                    .disabled(regenerating)   // don't switch rubric mid-coach
+                    // Don't switch rubric mid-coach — whether this pane started the coach
+                    // (`regenerating`) or a finalize job / Re-run sweep did (`running`): the
+                    // auto re-coach a type change fires would bail on the other call's claim.
+                    .disabled(regenerating || d.session.coachingStatus == .running)
                 }
                 .font(.title2).bold()
                 if let renameError {
@@ -330,6 +348,9 @@ struct SessionDetailView: View {
                         if let regenerateError {
                             Text(regenerateError).font(.caption).foregroundStyle(.red)
                         }
+                        if let regenerateNote {
+                            Text(regenerateNote).font(.caption).foregroundStyle(.secondary)
+                        }
                         if d.session.coachingStatus == .failed {
                             // Shown even when stale feedback is still present: after a failed
                             // re-coach (e.g. following a round-type change) that feedback was
@@ -343,7 +364,10 @@ struct SessionDetailView: View {
                             Spacer()
                             Button(regenerateButtonTitle(hasFeedback: d.feedback != nil)) {
                                 regenerate()
-                            }.disabled(regenerating)
+                            }
+                            // Also disabled while someone else's debrief holds the claim:
+                            // `coach()` would bail and the click would do nothing at all.
+                            .disabled(regenerating || d.session.coachingStatus == .running)
                         }
                     }
                 }

@@ -3,7 +3,6 @@ import Store
 
 struct MenuBarView: View {
     @EnvironmentObject var env: AppEnvironment
-    @Environment(\.openWindow) private var openWindow
 
     /// Ceiling on the scrolling part of the popover. Two recovery prompts plus a handful of
     /// finalize jobs already exceed a short display's usable height, and everything below
@@ -18,6 +17,18 @@ struct MenuBarView: View {
             // so they are the part that scrolls.
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
+                    // Above the recording/idle branch, not inside `idleSection`: the exclusive
+                    // resource is a session directory, so recovering an orphaned one *while*
+                    // another interview records is deliberately legal (RecoveryTests pins it,
+                    // and the checklist asks the tester to do it). Rendered only while idle,
+                    // every recovery prompt vanished the moment recording started — the audio
+                    // was still there, but the only UI that offers it was not.
+                    if !env.recoverableSessions.isEmpty {
+                        ForEach(env.recoverableSessions, id: \.self) { dir in
+                            RecoveryPrompt(dir: dir)
+                        }
+                        Divider()
+                    }
                     if case .recording(let started) = env.coordinator.recordingPhase {
                         recordingSection(started: started)
                     } else {
@@ -41,20 +52,14 @@ struct MenuBarView: View {
         }
         .padding(12)
         .frame(width: 280)
-        // The popover is a MenuBarExtra window, not a view in the main window's scene, so it
-        // is a valid place to arm the opener for a Dock click that lands before the main
-        // window has ever appeared.
-        .onAppear { AppDelegate.openMainWindow = { openWindow(id: "main") } }
+        // Deliberately does NOT arm AppDelegate.openMainWindow: MenuBarLabel is the only
+        // registrar (see the comment on the property). This view's copy was captured from a
+        // scene that can be torn down, and it overwrote a closure that is good for the life
+        // of the process.
     }
 
     @ViewBuilder
     private var idleSection: some View {
-        if !env.recoverableSessions.isEmpty {
-            ForEach(env.recoverableSessions, id: \.self) { dir in
-                RecoveryPrompt(dir: dir)
-            }
-            Divider()
-        }
         if case .failed(let message) = env.coordinator.recordingPhase {
             Label(message, systemImage: "xmark.octagon.fill")
                 .foregroundStyle(.red).font(.caption).lineLimit(4)

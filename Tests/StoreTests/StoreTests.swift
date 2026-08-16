@@ -286,6 +286,58 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(Set(try db.sessionsNeedingCoaching().map(\.id)), [running, pending])
     }
 
+    /// The claim itself. `coach()` runs off the main actor from three call sites, so "read the
+    /// status, then write `running`" is two racing statements — both callers read `pending`,
+    /// both bill an LLM call, both write the same feedback row. Read and write live in one
+    /// write transaction so the second claim can only ever see the first one's result.
+    func testClaimCoachingIsExclusiveAndReportsThePriorStatus() throws {
+        let co = try db.fetchOrCreateCompany(named: "Acme")
+        let s = try db.insertSession(.init(id: nil, companyId: co.id!, roundType: .behavioral,
+                                           date: Date(), durationSeconds: 60, contextNotes: "",
+                                           coachingStatus: .pending))
+        let id = try XCTUnwrap(s.id)
+
+        XCTAssertEqual(try db.claimCoaching(sessionId: id), .pending,
+                       "the first claim must report the status it replaced")
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .running)
+        XCTAssertNil(try db.claimCoaching(sessionId: id),
+                     "a second caller claimed a session already being coached")
+        XCTAssertEqual(try db.sessionDetail(id: id)?.session.coachingStatus, .running,
+                       "the refused claim still wrote")
+
+        // A re-coach of a finished session claims too, and must report `complete` — that is
+        // what a cancelled run puts back, and restoring `pending` there would drag a session
+        // holding good feedback into every retry sweep.
+        try db.setCoachingStatus(sessionId: id, .complete)
+        XCTAssertEqual(try db.claimCoaching(sessionId: id), .complete)
+
+        // A session that isn't there is nothing to claim, not a crash.
+        XCTAssertNil(try db.claimCoaching(sessionId: 9_999))
+    }
+
+    /// `plannedCalls` filters rather than purges, so a plan you never recorded drops out of
+    /// every surface after 24h — including the list its only delete button lives on. The
+    /// launch purge is what stops "invisible" from also meaning "permanent".
+    func testStalePlannedCallsArePurgedButRecentAndFutureOnesSurvive() throws {
+        let now = Date()
+        let ancient = try db.insertPlannedCall(.init(companyName: "Ancient", roundType: .behavioral,
+                                                     scheduledDate: now.addingTimeInterval(-40 * 86_400)))
+        let lastWeek = try db.insertPlannedCall(.init(companyName: "LastWeek", roundType: .behavioral,
+                                                      scheduledDate: now.addingTimeInterval(-7 * 86_400)))
+        let tomorrow = try db.insertPlannedCall(.init(companyName: "Upcoming", roundType: .behavioral,
+                                                      scheduledDate: now.addingTimeInterval(86_400)))
+
+        XCTAssertEqual(try db.purgeStalePlannedCalls(now: now), 1)
+
+        // Read with a window wide enough to include the survivors that `plannedCalls` filters.
+        let remaining = try db.plannedCalls(now: now.addingTimeInterval(-40 * 86_400)).map(\.id)
+        XCTAssertFalse(remaining.contains(ancient.id), "a 40-day-old plan outlived the purge")
+        XCTAssertTrue(remaining.contains(lastWeek.id), "a week-old plan is still worth recovering")
+        XCTAssertTrue(remaining.contains(tomorrow.id))
+        // Idempotent: a second launch finds nothing left to do.
+        XCTAssertEqual(try db.purgeStalePlannedCalls(now: now), 0)
+    }
+
     func testPlannedCallsRoundTripAndComeBackSoonestFirst() throws {
         let later = try db.insertPlannedCall(.init(companyName: "Globex", role: "Staff iOS",
                                                    roundType: .technical,

@@ -13,12 +13,31 @@ public struct CoachingService: Sendable {
 
     public func coach(sessionId: Int64) async throws {
         // Restored if the call is cancelled: a stopped re-run must leave the session exactly
-        // as it was, including a `complete` it already held.
+        // as it was, including a `complete` it already held. Set from what `claimCoaching`
+        // reports the row held inside the claiming transaction — a status read before the
+        // claim can already be stale by the time the claim lands.
         var statusBeforeClaim: CoachingStatus?
         do {
             guard let detail = try db.sessionDetail(id: sessionId) else {
                 throw ClaudeError.emptyResponse
             }
+            // Claim the session before anything else touches its status. `claimCoaching` reads
+            // and writes in one transaction and returns nil when the session was already
+            // `running`: someone else — a finalize job, most likely, with the user hitting
+            // "Re-run debriefs" meanwhile — has an LLM call out for it. Bailing is what makes
+            // `running` an actual claim rather than a label: two calls would bill twice and
+            // race to write the same feedback row. Not an error; the debrief in flight is the
+            // one that lands. `running` is cleared by whichever call owns it, or by the launch
+            // sweep if that process died.
+            //
+            // This is deliberately the FIRST write, ahead of the transcript-only check below.
+            // The reachable case is a round type changed to a transcript-only one while a
+            // debrief for that session is in flight (SessionsView's type picker re-coaches):
+            // checking first would stamp `skipped` over a live claim, and the call still in
+            // flight would then overwrite it with `complete` and a debrief the round type says
+            // must not exist.
+            guard let previousStatus = try db.claimCoaching(sessionId: sessionId) else { return }
+            statusBeforeClaim = previousStatus
             // Transcript-only round types stop here: recorded and transcribed, never scored.
             // The guard lives in coach() rather than at the call sites because all three
             // paths — finalize, retryAllPending, and recoachAll — funnel through here, so
@@ -28,13 +47,6 @@ public struct CoachingService: Sendable {
                 try db.markCoachingSkipped(sessionId: sessionId)
                 return
             }
-            // Someone else already has an LLM call out for this session — a finalize job,
-            // most likely, with the user hitting "Re-run debriefs" meanwhile. Bailing is what
-            // makes `running` an actual claim rather than a label: two calls would bill twice
-            // and race to write the same feedback row. Not an error; the debrief in flight is
-            // the one that lands. `running` is cleared by whichever call owns it, or by the
-            // launch sweep if that process died.
-            if detail.session.coachingStatus == .running { return }
             let history = try db.recentWeaknessTags(limitSessions: historyWindow)
             let system = try prompts.assembleSystemPrompt(roundType: detail.session.roundType,
                                                           historyTags: history,
@@ -51,11 +63,6 @@ public struct CoachingService: Sendable {
             Transcript:
             \(transcript)
             """
-            // Claimed before the await, not after: coaching now runs concurrently with a
-            // later recording's finalize and with the Retry sweep, and `running` is what
-            // keeps a second caller from billing a duplicate call for this session.
-            statusBeforeClaim = detail.session.coachingStatus
-            try db.setCoachingStatus(sessionId: sessionId, .running)
             let result = try await llm.generateCoaching(systemPrompt: system, userMessage: user,
                                                         dimensions: dimensions)
 
@@ -86,9 +93,9 @@ public struct CoachingService: Sendable {
                 // Undo the `running` claim. Leaving it would be worse than the old no-op:
                 // `running` is excluded from every sweep, so a stopped re-run would strand
                 // the session until the next launch reclaimed it. Restoring `running` itself
-                // would strand it the same way — unreachable given the bail-out above, but
-                // clamped rather than trusted, because the cost of being wrong is a session
-                // no sweep will ever pick up.
+                // would strand it the same way — unreachable, since `claimCoaching` never
+                // returns `running`, but clamped rather than trusted, because the cost of
+                // being wrong is a session no sweep will ever pick up.
                 try? db.setCoachingStatus(sessionId: sessionId,
                                           statusBeforeClaim == .running ? .pending : statusBeforeClaim)
             }
