@@ -50,7 +50,7 @@ public struct OpenAICompatibleClient: CoachingLLM {
           "advancement_rationale": "The one thing that decided it.",
           "weakness_tags": ["rambling_intro"],
           "highlights": [{"t": "00:03:11", "note": "Buried the result under three minutes of setup"}, {"t": "00:14:32", "note": "Strong recovery after the hint — do this again"}, {"t": "00:28:40", "note": "Asked what the team measures, unprompted"}],
-          "action_items": ["Prep a 90-second intro"],
+          "action_items": ["Prep a 90-second intro", "Bring one quantified result per story"],
           "process_notes": [{"t": "00:41:05", "note": "Two more rounds; system design next, then a panel. Decision by Friday."}]
         }
 

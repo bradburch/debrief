@@ -166,6 +166,9 @@ final class OpenAICompatibleClientTests: XCTestCase {
         let example = try XCTUnwrap(JSONSerialization.jsonObject(with: exampleData) as? [String: Any])
         let highlights = try XCTUnwrap(example["highlights"] as? [Any])
         XCTAssertGreaterThanOrEqual(highlights.count, 3)
+        let actionItems = try XCTUnwrap(example["action_items"] as? [Any])
+        XCTAssertTrue((2...5).contains(actionItems.count),
+                      "the appendix says 2-5 action items; the example must model that")
     }
 
     func testCandidateObjectsEdgeCases() {

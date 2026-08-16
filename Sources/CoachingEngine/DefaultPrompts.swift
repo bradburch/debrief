@@ -194,9 +194,12 @@ enum DefaultPrompts {
 
     Base weakness tag vocabulary:
     rambling_intro, buried_lede, no_quantified_impact, didnt_answer_question, weak_examples,
-    excessive_filler (only filler that survives in the transcript — never inferred um/uh counts),
+    excessive_filler,
     low_energy, no_questions_asked, talked_over_interviewer,
     negative_about_past_employer, unclear_role_story, missed_closing
+
+    Apply excessive_filler only to filler that survives in the transcript — never to inferred
+    um/uh counts (the transcriber deletes those before you see the text).
 
     If prior-session history is provided below, explicitly connect recurring tags to this
     session ("this is the Nth session with rambling_intro") and prioritize those in action items.
@@ -252,7 +255,7 @@ enum DefaultPrompts {
       neither side ever signalled where it landed, score 3, say in the prose_debrief that the
       outcome was not audible, and do not move the score to cover the uncertainty. Never treat
       the candidate's own confidence as evidence that it worked. 5 = THEM accepted the solution
-      with little correction, and the candidate had caught their own bugs before THEM did.
+      with little correction, and any bugs there were, the candidate caught before THEM did.
     - problem_solving: how they got there. Did the approach come from reasoning about the
       problem, or from pattern-matching a memorized template that happened to fit? 5 = the
       approach was derived out loud from a property of the problem, with the obvious
