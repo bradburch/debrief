@@ -121,8 +121,6 @@ Driving the app for real (all verified the hard way): `tell application "Debrief
 
 On the Settings pane specifically, `entire contents` **errors outright** (`-1700`, "can't make into type specifier"). What works is counting the Form's sections — `count of UI elements of scroll area 1 of group 2 of splitter group 1 of group 1 of window 1` returns one `group` per `Section`, so an added section is visible as the count changing. `screencapture` is not a fallback: the shell lacks Screen Recording, so it fails with "could not create image from display".
 
-On the Settings pane specifically, `entire contents` **errors outright** (`-1700`, "can't make into type specifier"). What works is counting the Form's sections — `count of UI elements of scroll area 1 of group 2 of splitter group 1 of group 1 of window 1` returns one `group` per `Section`, so an added section is visible as the count changing. `screencapture` is not a fallback: the shell lacks Screen Recording, so it fails with "could not create image from display".
-
 ## Architecture
 
 Swift Package, no `.xcodeproj`. Four library targets + one executable; the executable is the only place they're wired together:
