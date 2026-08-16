@@ -564,6 +564,8 @@ final class RecordingCoordinatorTests: XCTestCase {
         let failed = try XCTUnwrap(coordinator.finalizeJobs.first { $0.id == jobA })
         XCTAssertNotNil(failed.failure)
         XCTAssertTrue(try db.allSessionSummaries().isEmpty, "the orphaned session row must be removed")
+        XCTAssertNil(try db.findCompany(named: "Acme"),
+                     "compensation must also remove the company row it created, or Pipeline shows a zero-session company")
         let keptDir = root.appendingPathComponent(dirA, isDirectory: false)
         XCTAssertTrue(FileManager.default.fileExists(atPath: keptDir.path),
                       "audio must be kept for a failed finalize")

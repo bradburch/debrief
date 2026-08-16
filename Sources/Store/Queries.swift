@@ -58,6 +58,26 @@ extension AppDatabase {
         }
     }
 
+    public func findCompany(named name: String) throws -> Company? {
+        try dbWriter.read { db in
+            try Company.filter(Column("name") == name).fetchOne(db)
+        }
+    }
+
+    /// Deletes a company only if no session references it. Used by the no-speech
+    /// compensation path: `fetchOrCreateCompany` runs before segments are inserted, so a
+    /// finalize that fails and deletes its session row would otherwise leave a stray
+    /// zero-session company behind in Pipeline.
+    public func deleteCompanyIfUnused(id: Int64) throws {
+        try dbWriter.write { db in
+            let inUse = try Int.fetchOne(
+                db, sql: "SELECT 1 FROM session WHERE companyId = ? LIMIT 1", arguments: [id])
+            if inUse == nil {
+                try db.execute(sql: "DELETE FROM company WHERE id = ?", arguments: [id])
+            }
+        }
+    }
+
     public func updateCompanyStatus(id: Int64, status: CompanyStatus) throws {
         try dbWriter.write { db in
             try db.execute(sql: "UPDATE company SET status = ? WHERE id = ?", arguments: [status.rawValue, id])

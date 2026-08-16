@@ -13,6 +13,21 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(a.id, b.id)
     }
 
+    func testDeleteCompanyIfUnusedKeepsACompanyWithSessionsAndRemovesAnEmptyOne() throws {
+        let used = try db.fetchOrCreateCompany(named: "Acme")
+        _ = try db.insertSession(InterviewSession(
+            id: nil, companyId: used.id!, roundType: .behavioral,
+            date: Date(timeIntervalSince1970: 1_750_000_000),
+            durationSeconds: 60, contextNotes: "", coachingStatus: .pending))
+        let empty = try db.fetchOrCreateCompany(named: "Globex")
+
+        try db.deleteCompanyIfUnused(id: used.id!)
+        try db.deleteCompanyIfUnused(id: empty.id!)
+
+        XCTAssertNotNil(try db.findCompany(named: "Acme"))
+        XCTAssertNil(try db.findCompany(named: "Globex"))
+    }
+
     func testRenameSessionDoesNotAffectSiblingsSharingCompany() throws {
         let unknown = try db.fetchOrCreateCompany(named: "Unknown")
         func makeSession() throws -> Int64 {

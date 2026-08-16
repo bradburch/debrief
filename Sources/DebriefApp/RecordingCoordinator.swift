@@ -473,6 +473,7 @@ public final class RecordingCoordinator: ObservableObject {
         // Tracked across the do/catch below so the catch block can compensate for a
         // session row that got inserted but whose segments then failed to persist.
         var insertedSessionId: Int64?
+        var insertedCompanyId: Int64?
         var segmentsInserted = false
 
         do {
@@ -486,6 +487,7 @@ public final class RecordingCoordinator: ObservableObject {
 
             updateJob(jobId) { $0.status = "Saving…" }
             let company = try db.fetchOrCreateCompany(named: metadata.company)
+            insertedCompanyId = company.id
             let durationSeconds = explicitDurationSeconds
                 ?? Int(Double(max(micChunks.count, sysChunks.count)) * chunkDuration)
             let session = try db.insertSession(InterviewSession(
@@ -541,6 +543,11 @@ public final class RecordingCoordinator: ObservableObject {
                     try db.deleteSession(id: id)
                 } catch {
                     logger.error("failed to delete orphaned session \(id, privacy: .public): \(error, privacy: .public)")
+                }
+                // The company row was created before the segments failed; don't leave a
+                // zero-session company in Pipeline. No-op if other sessions reference it.
+                if let companyId = insertedCompanyId {
+                    try? db.deleteCompanyIfUnused(id: companyId)
                 }
                 // Outside the do/catch on purpose: the stamp must go even when the delete
                 // fails. A stamp naming a row that isn't there — or one that is there with no
