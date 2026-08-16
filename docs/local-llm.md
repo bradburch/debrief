@@ -5,6 +5,24 @@ everything on your machine (or use another provider), point Debrief at any
 OpenAI-compatible server. This guide uses Ollama; LM Studio and remote
 providers are covered at the end.
 
+## If you're here to avoid API cost, read this first
+
+Two options avoid a metered API key, and they trade off differently:
+
+- **A local model** (this guide) — genuinely free, fully offline, no rate
+  limits, and the only option that keeps interview transcripts entirely on your
+  machine. Costs you coaching quality; see the expectations below.
+- **Your Claude subscription** (Settings → Coaching model → "Claude
+  subscription") — runs debriefs through the Claude Code CLI, so you get real
+  Claude quality with no API key. It carries roughly 15–20k extra tokens of the
+  CLI's own prompt per debrief, subscription rate limits can throttle "Re-run
+  debriefs on current rubric", and because Claude Code is a coding tool this
+  isn't a supported integration — a CLI update can break it. Requires the CLI
+  installed and signed in.
+
+Both use the same prompt-based response contract described below, since neither
+can enforce a JSON schema the way the Claude API path does.
+
 ## Honest expectations
 
 Local models produce noticeably weaker coaching than Claude: shallower
