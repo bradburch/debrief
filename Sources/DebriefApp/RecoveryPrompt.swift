@@ -61,6 +61,9 @@ struct RecoveryPrompt: View {
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.yellow.opacity(0.1)))
+        // This surface never runs startRecording's refresh, and it is the one that shows up
+        // after a crash — when the plan for the crashed call is exactly what's needed.
+        .onAppear { env.refreshPlannedCalls() }
     }
 
     private func applyPlan(_ plan: PlannedCall) {

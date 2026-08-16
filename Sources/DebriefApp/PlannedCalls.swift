@@ -26,11 +26,15 @@ struct PlannedCallDraft: Identifiable, Equatable {
         customInstructions = plan.customInstructions
     }
 
+    /// Every text field is trimmed on the way to the row. Whitespace-only criteria are the
+    /// case that matters: `assembleSystemPrompt` trims them away and appends nothing, so
+    /// storing them non-empty would light a "Grading criteria applied" badge over a rubric
+    /// the debrief never sees.
     var plannedCall: PlannedCall {
-        PlannedCall(id: planId,
-                    companyName: companyName.trimmingCharacters(in: .whitespacesAndNewlines),
-                    role: role, roundType: roundType, scheduledDate: scheduledDate,
-                    notes: notes, customInstructions: customInstructions)
+        func trim(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return PlannedCall(id: planId, companyName: trim(companyName), role: trim(role),
+                           roundType: roundType, scheduledDate: scheduledDate,
+                           notes: trim(notes), customInstructions: trim(customInstructions))
     }
 
     /// A plan is only useful if it names a company — that's what the pre-fill is for.
@@ -140,28 +144,25 @@ struct PrefillMenu: View {
     let onPlanned: (PlannedCall) -> Void
     let onCalendar: (UpcomingInterview) -> Void
 
+    /// Renders nothing when there is nothing to offer — which is also why it carries no
+    /// refresh of its own: an `.onAppear` on a view that resolves to no content is exactly
+    /// the case SwiftUI may never invoke, and "no plans loaded yet" is that case. Whoever
+    /// shows this menu refreshes first (`startRecording`, `RecoveryPrompt.onAppear`), on top
+    /// of the refreshes at launch and after every save or delete.
     var body: some View {
-        // The refresh hangs off a Group wrapping the `if`, not off the Menu inside it: on the
-        // Menu it would never run in the one state that needs it — no plans loaded yet means
-        // no Menu, so nothing appears, so nothing refreshes, so no Menu.
-        Group {
-            if !env.plannedCalls.isEmpty || !env.upcoming.isEmpty {
-                Menu("Pre-fill") {
-                    ForEach(env.plannedCalls) { plan in
-                        Button { onPlanned(plan) } label: { Self.label(for: plan) }
-                    }
-                    if !env.plannedCalls.isEmpty, !env.upcoming.isEmpty { Divider() }
-                    ForEach(env.upcoming, id: \.self) { item in
-                        Button { onCalendar(item) } label: {
-                            Text(verbatim: item.company) + Text(" — ") + Text(item.start, style: .time)
-                        }
+        if !env.plannedCalls.isEmpty || !env.upcoming.isEmpty {
+            Menu("Pre-fill") {
+                ForEach(env.plannedCalls) { plan in
+                    Button { onPlanned(plan) } label: { Self.label(for: plan) }
+                }
+                if !env.plannedCalls.isEmpty, !env.upcoming.isEmpty { Divider() }
+                ForEach(env.upcoming, id: \.self) { item in
+                    Button { onCalendar(item) } label: {
+                        Text(verbatim: item.company) + Text(" — ") + Text(item.start, style: .time)
                     }
                 }
             }
         }
-        // Cheap single-table read, and the only thing that keeps the crash-recovery prompt's
-        // menu current — that surface never runs startRecording's refresh.
-        .onAppear { env.refreshPlannedCalls() }
     }
 
     static func label(for plan: PlannedCall) -> Text {

@@ -254,13 +254,24 @@ final class AppEnvironment: ObservableObject {
     ///
     /// Runs as a detached follow-up rather than blocking the caller: stopping is deliberately
     /// non-blocking so the next interview can start while this one is transcribed.
+    /// The job lookup inside `awaitFinalize` is why this Task is started at stop time and not
+    /// later: a *dismissed* job is unknown to the coordinator and reports nil. Dismissal
+    /// requires a finished job and a click, both on the main actor, long after this Task has
+    /// been enqueued — and if it ever did lose the race, the plan is kept, not wrongly eaten.
     private func consumePlan(_ id: Int64?, after job: UUID?) {
         guard let id, let job else { return }
-        Task { [weak self] in
+        planConsumption = Task { [weak self] in
             guard let self, await self.coordinator.awaitFinalize(job) != nil else { return }
             self.deletePlannedCall(id: id)
         }
     }
+
+    /// The consume follow-up in flight. Kept only so tests can await the *decision* — the
+    /// interesting assertion is often that a plan was NOT deleted, and a negative assertion
+    /// behind a yield loop passes vacuously whenever the task simply hasn't run yet.
+    private var planConsumption: Task<Void, Never>?
+
+    func awaitPlanConsumption() async { await planConsumption?.value }
 
     /// Single start path shared by the two Record buttons and the notification's
     /// Record action; clears the call-detected notification so it can't be

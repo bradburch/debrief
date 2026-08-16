@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import Store
 
 final class StoreTests: XCTestCase {
@@ -299,7 +300,15 @@ final class StoreTests: XCTestCase {
         let stored = try XCTUnwrap(all.last)
         XCTAssertEqual(stored.companyName, "Globex")
         XCTAssertEqual(stored.role, "Staff iOS")
-        XCTAssertEqual(stored.roundType, .technical)   // single-value coded, not {"rawValue":…}
+        XCTAssertEqual(stored.roundType, .technical)
+        // Read the raw column, not just the round-trip: encode and decode are symmetric, so a
+        // RoundType stored as {"rawValue":"technical"} would round-trip fine here and then
+        // blank every Picker that binds by tag.
+        let rawRoundType = try db.dbWriter.read { db in
+            try String.fetchOne(db, sql: "SELECT roundType FROM plannedCall WHERE id = ?",
+                                arguments: [stored.id])
+        }
+        XCTAssertEqual(rawRoundType, "technical")
         XCTAssertEqual(stored.notes, "panel of two")
         XCTAssertEqual(stored.customInstructions, "Grade on API design.")
         // The defaulted columns, which the record's own defaults also cover.

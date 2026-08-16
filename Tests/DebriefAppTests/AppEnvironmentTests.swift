@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import Combine
 @testable import DebriefApp
 import CaptureKit
@@ -39,6 +40,24 @@ final class AppEnvironmentTests: XCTestCase {
             chunkDuration: 1.0)
         return AppEnvironment(db: db, prompts: prompts, coaching: coaching, coordinator: coordinator,
                               alerts: alerts, recordingsRoot: root)
+    }
+
+    /// An orphaned session directory with one chunk on each stream — what a crash leaves
+    /// behind. Same shape RecoveryTests seeds.
+    func seedOrphanDir(root: URL) throws -> URL {
+        let dir = try RecordingStore.createSessionDirectory(root: root)
+        try RecordingStore.writeManifest(.init(startedAt: Date(timeIntervalSinceNow: -300),
+                                               finalized: false), in: dir)
+        let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
+                                channels: 1, interleaved: false)!
+        for prefix in ["mic", "sys"] {
+            let writer = try WavChunkWriter(directory: dir, prefix: prefix, chunkDuration: 1.0)
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 16_000)!
+            buf.frameLength = 16_000
+            try writer.append(buf)
+            try writer.finish()
+        }
+        return dir
     }
 
     func makeRoot() throws -> URL {
@@ -314,7 +333,8 @@ final class AppEnvironmentTests: XCTestCase {
         XCTAssertEqual(session.customInstructions, "GRADE_MARKER_XYZ")
         XCTAssertEqual(session.contextNotes, "Role: Staff iOS — panel of two")
         // Consumed once the finalize produced a session, and the form left clean.
-        try await waitUntil("the recorded plan was never consumed") { env.plannedCalls.isEmpty }
+        await env.awaitPlanConsumption()
+        XCTAssertTrue(env.plannedCalls.isEmpty, "the recorded plan was never consumed")
         XCTAssertEqual(try db.plannedCalls().count, 0)
         XCTAssertEqual(env.recordCriteria, "")
     }
@@ -337,22 +357,79 @@ final class AppEnvironmentTests: XCTestCase {
         await env.coordinator.startRecording()
         await env.stopAndDebrief()
         await env.coordinator.awaitAllFinalizes()
-        // Let the consume follow-up run; it must decide *not* to delete.
-        for _ in 0..<50 { await Task.yield() }
+        // Await the consume follow-up's *decision*, not a yield count: asserting an absence
+        // behind a bounded wait passes for free whenever the task simply hasn't run.
+        await env.awaitPlanConsumption()
 
         XCTAssertTrue(try db.allSessionSummaries().isEmpty, "the orphaned session row must be gone")
         XCTAssertEqual(try db.plannedCalls().map(\.id), [plan.id],
                        "a failed finalize consumed the plan, losing the criteria for the retry")
+        XCTAssertFalse(env.recoverableSessions.isEmpty, "the audio must still be recoverable")
+    }
 
-        // And the recovery prompt's path can still apply and consume it.
-        let dir = try XCTUnwrap(env.recoverableSessions.first)
+    /// Recovering a crashed planned call consumes its plan on exactly the same terms as a
+    /// live stop: only because a session came back. The failing half of this is covered
+    /// above; this is the half that can silently stop working, since `recover` not passing
+    /// the plan through at all looks identical to a finalize that failed.
+    func testRecoveringACrashedPlannedCallConsumesItsPlan() async throws {
+        let db = try AppDatabase.inMemory()
+        let root = try makeRoot()
+        let env = try makeEnv(db: db, root: root)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", role: "Staff iOS",
+                                                  roundType: .technical, scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        // A directory a crashed launch left behind, with audio on both streams.
+        let dir = try seedOrphanDir(root: root)
+        env.refreshRecoverables()
+        XCTAssertEqual(env.recoverableSessions, [dir])
+
         env.apply(plan)
-        await env.recover(dir, metadata: .init(company: "Acme", roundType: .technical, notes: "",
-                                               customInstructions: "GRADE_MARKER_XYZ"),
+        await env.recover(dir, metadata: .init(company: env.recordCompany, roundType: env.recordRoundType,
+                                               notes: env.recordNotes,
+                                               customInstructions: env.recordCriteria),
                           plannedCallId: plan.id)
         await env.coordinator.awaitAllFinalizes()
-        // Still no transcript possible with a throwing transcriber, so the plan stays.
-        XCTAssertEqual(try db.plannedCalls().count, 1)
+        await env.awaitPlanConsumption()
+
+        let summaries = try db.allSessionSummaries()
+        XCTAssertEqual(summaries.count, 1)
+        let recovered = try XCTUnwrap(summaries.first?.session)
+        XCTAssertEqual(recovered.customInstructions, "GRADE_MARKER_XYZ",
+                       "a recovered planned call lost its grading criteria")
+        XCTAssertEqual(recovered.contextNotes, "Role: Staff iOS")
+        XCTAssertTrue(try db.plannedCalls().isEmpty, "a recovered plan must be consumed too")
+    }
+
+    /// Changing your mind: apply a plan, then pick a calendar entry instead. The calendar
+    /// path has to drop both the criteria and the remembered plan, or the session is graded
+    /// on a rubric written for a different interview *and* that interview's plan is deleted
+    /// for a call it never covered.
+    func testApplyingACalendarEntryAfterAPlanDropsThePlansCriteriaAndClaim() async throws {
+        let db = try AppDatabase.inMemory()
+        let env = try makeEnv(db: db)
+        let plan = try db.insertPlannedCall(.init(companyName: "Acme", role: "Staff iOS",
+                                                  roundType: .technical, scheduledDate: Date(),
+                                                  customInstructions: "GRADE_MARKER_XYZ"))
+        env.refreshPlannedCalls()
+
+        env.apply(plan)
+        env.apply(UpcomingInterview(company: "Globex", roundType: "behavioral",
+                                    start: Date(), notes: "phone screen"))
+        XCTAssertEqual(env.recordCompany, "Globex")
+        XCTAssertEqual(env.recordCriteria, "", "the abandoned plan's rubric is still armed")
+
+        await env.coordinator.startRecording()
+        await env.stopAndDebrief()
+        await env.coordinator.awaitAllFinalizes()
+        await env.awaitPlanConsumption()
+
+        let session = try XCTUnwrap(try db.allSessionSummaries().first?.session)
+        XCTAssertEqual(session.customInstructions, "",
+                       "Globex was graded on the rubric written for the Acme interview")
+        XCTAssertEqual(try db.plannedCalls().map(\.id), [plan.id],
+                       "recording a different interview consumed the Acme plan")
     }
 
     func testContextNotesFoldsTheRoleInWithoutInventingSeparators() {
