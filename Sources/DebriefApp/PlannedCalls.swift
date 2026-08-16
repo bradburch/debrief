@@ -141,22 +141,27 @@ struct PrefillMenu: View {
     let onCalendar: (UpcomingInterview) -> Void
 
     var body: some View {
-        if !env.plannedCalls.isEmpty || !env.upcoming.isEmpty {
-            Menu("Pre-fill") {
-                ForEach(env.plannedCalls) { plan in
-                    Button { onPlanned(plan) } label: { Self.label(for: plan) }
-                }
-                if !env.plannedCalls.isEmpty, !env.upcoming.isEmpty { Divider() }
-                ForEach(env.upcoming, id: \.self) { item in
-                    Button { onCalendar(item) } label: {
-                        Text(verbatim: item.company) + Text(" — ") + Text(item.start, style: .time)
+        // The refresh hangs off a Group wrapping the `if`, not off the Menu inside it: on the
+        // Menu it would never run in the one state that needs it — no plans loaded yet means
+        // no Menu, so nothing appears, so nothing refreshes, so no Menu.
+        Group {
+            if !env.plannedCalls.isEmpty || !env.upcoming.isEmpty {
+                Menu("Pre-fill") {
+                    ForEach(env.plannedCalls) { plan in
+                        Button { onPlanned(plan) } label: { Self.label(for: plan) }
+                    }
+                    if !env.plannedCalls.isEmpty, !env.upcoming.isEmpty { Divider() }
+                    ForEach(env.upcoming, id: \.self) { item in
+                        Button { onCalendar(item) } label: {
+                            Text(verbatim: item.company) + Text(" — ") + Text(item.start, style: .time)
+                        }
                     }
                 }
             }
-            // Cheap single-table read, and the only thing that keeps the recovery prompt's
-            // menu current — that surface never runs startRecording's refresh.
-            .onAppear { env.refreshPlannedCalls() }
         }
+        // Cheap single-table read, and the only thing that keeps the crash-recovery prompt's
+        // menu current — that surface never runs startRecording's refresh.
+        .onAppear { env.refreshPlannedCalls() }
     }
 
     static func label(for plan: PlannedCall) -> Text {
