@@ -10,13 +10,18 @@ struct TrendsView: View {
 
     var body: some View {
         Group {
-            if tagCounts.isEmpty && scorePoints.isEmpty {
+            // Gated on `scorePoints` alone. Gating on `tagCounts` too made this unreachable
+            // on any real database: `tagFrequencyByMonth` is global and unfiltered, so it is
+            // non-empty as soon as one debrief anywhere has a tag — and it would also have
+            // let the round-filter copy below promise a filter-awareness the tag chart does
+            // not have.
+            if scorePoints.isEmpty {
                 ContentUnavailableView(
-                    "Nothing to trend yet",
+                    "No scored debriefs yet",
                     systemImage: "chart.line.uptrend.xyaxis",
                     description: Text(roundFilter == nil
-                                      ? "Trends build up once a few interviews have been debriefed."
-                                      : "No debriefed interviews of this round type yet."))
+                                      ? "Scores appear here once an interview has been debriefed."
+                                      : "No scored debriefs for this round type."))
             } else {
                 charts
             }
@@ -66,16 +71,31 @@ struct TrendsView: View {
                         Chart(identifiableScorePoints) { p in
                             LineMark(x: .value("Date", p.date),
                                      y: .value("Score", p.score),
-                                     series: .value("Dimension", p.series))
-                            .foregroundStyle(by: .value("Dimension", p.series))
+                                     series: .value("Dimension", p.dimension))
+                            .foregroundStyle(by: .value("Dimension", p.dimension))
                             PointMark(x: .value("Date", p.date), y: .value("Score", p.score))
-                                .foregroundStyle(by: .value("Dimension", p.series))
+                                .foregroundStyle(by: .value("Dimension", p.dimension))
                         }
                         // Scores are a 1–5 forced choice; a 0 is not a bad score, it is not
                         // a score. Anchoring the axis at 0 spent a fifth of the plot on a
                         // value that can never appear and flattened the range that can.
+                        //
+                        // This domain CLIPS rather than rejects: a point outside 1...5 just
+                        // vanishes from the plot. That is tolerable only because the scores
+                        // are validated on the way in — `decodeCoaching` enforces the range
+                        // — so an out-of-range point means a decode bug, not a display one.
                         .chartYScale(domain: 1...5)
                         .frame(height: 240)
+                        // Not a per-round split. Keying the series by dimension+round made
+                        // this chart honest and unreadable at the same time: every base
+                        // dimension multiplies by the number of round types, which on a real
+                        // database was 48 lines and a rainbow legend. The ambiguity is worth
+                        // one sentence, not forty-eight series.
+                        if roundFilter == nil {
+                            Text("`technical_depth` and `quantified_impact` are declared by two round types with different definitions, so those lines mix both. Filter to a round type to compare like with like.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .padding(.top, 4)
+                        }
                     }
                 }
             }
@@ -83,14 +103,8 @@ struct TrendsView: View {
         }
     }
 
-    /// Split by round type only in the unfiltered view. `technical_depth` and
-    /// `quantified_impact` are declared by two overlays with different definitions, so
-    /// across all rounds one line labelled `technical_depth` silently averages two different
-    /// questions. Within a single round type there is nothing to disambiguate, and the
-    /// suffix would just be noise on every legend entry.
     private var identifiableScorePoints: [IdentifiableScorePoint] {
-        let splitByRound = roundFilter == nil
-        return scorePoints.map { IdentifiableScorePoint(point: $0, splitByRound: splitByRound) }
+        scorePoints.map(IdentifiableScorePoint.init)
     }
 
     private func reload() {
@@ -99,20 +113,18 @@ struct TrendsView: View {
     }
 }
 
-/// Local wrapper giving `ScorePoint` a chart-safe composite identity
-/// (date + series) without changing Store's public `ScorePoint` shape.
+/// Local wrapper giving `ScorePoint` a chart-safe composite identity without changing
+/// Store's public `ScorePoint` shape.
+///
+/// The id carries the round type but the *series* deliberately does not: two round types
+/// scoring the same dimension on the same day are two points, not one, yet they belong on
+/// one line (see the note under the chart). Still imperfect — two sessions of the same round
+/// type on the same day collide and one point is dropped — but that predates this wrapper
+/// and needs a real session id from `scoresByDate` to fix properly.
 private struct IdentifiableScorePoint: Identifiable {
     let point: ScorePoint
-    let series: String
-
-    init(point: ScorePoint, splitByRound: Bool) {
-        self.point = point
-        self.series = splitByRound
-            ? "\(point.dimension) (\(point.roundType.displayName))"
-            : point.dimension
-    }
-
-    var id: String { "\(point.date.timeIntervalSince1970)|\(series)" }
+    var id: String { "\(point.date.timeIntervalSince1970)|\(point.dimension)|\(point.roundType.rawValue)" }
     var date: Date { point.date }
+    var dimension: String { point.dimension }
     var score: Int { point.score }
 }

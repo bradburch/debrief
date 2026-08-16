@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import OSLog
 
 @main
 struct DebriefApp: App {
@@ -17,8 +18,11 @@ struct DebriefApp: App {
         Window("Debrief", id: "main") {
             MainWindow().environmentObject(env)
         }
-        // Only a default: WindowFrameAutosave hands the NSWindow to AppKit's frame
-        // autosave, so after the first launch the user's own size and position win.
+        // First launch only. A `Window` scene already persists its own frame (measured:
+        // under the `NSWindow Frame main` default, restored without any help), so this is
+        // the size a fresh install opens at and nothing more — the user's own size wins
+        // from then on. An AppKit frame-autosave shim here is not just redundant, it
+        // writes a second, competing record.
         .defaultSize(width: 1100, height: 700)
     }
 
@@ -71,13 +75,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Opening a `Window(id:)` scene needs SwiftUI's `openWindow` action, which only exists
     /// inside a view — and both callers below (a Dock click, the popover's button) run
-    /// outside one. Whichever view is alive registers the action here.
+    /// outside one. `MenuBarLabel` registers it, and is deliberately the *only* registrar:
+    /// it is the one view guaranteed to have appeared, because dropping `LSUIElement` does
+    /// NOT make the `Window` scene open at launch (measured — the app still starts at zero
+    /// windows) and the popover's content is built lazily on first click.
     ///
-    /// `MenuBarLabel` is the one that matters, because it is the only view guaranteed to
-    /// have appeared: dropping `LSUIElement` does NOT make the `Window` scene open at
-    /// launch (measured — the app still starts at zero windows), and the popover's content
-    /// is built lazily on first click. Arming this from `MainWindow` alone left the very
-    /// first Dock click on a fresh launch a silent no-op.
+    /// `MainWindow` used to re-register on appear. That was strictly worse than nothing: it
+    /// replaced a closure good for the life of the process with one captured from a scene
+    /// that can be torn down, for no gain, since the label's copy is always valid.
     @MainActor static var openMainWindow: (() -> Void)?
 
     /// Bring the main window up and focused, creating it if the user closed it.
@@ -86,6 +91,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// activating in the same turn races it and can leave a brand-new window unfocused.
     @MainActor
     static func focusMainWindow() {
+        if openMainWindow == nil {
+            // Should be impossible — MenuBarLabel arms this at launch — but a silent no-op
+            // here is exactly the bug that shipped in the first draft, so leave a trace
+            // rather than a dead click.
+            Logger(subsystem: "com.debrief.app", category: "app")
+                .error("focusMainWindow with no opener registered — the main window cannot be created")
+        }
         openMainWindow?()
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
@@ -93,13 +105,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// A Dock click. `hasVisibleWindows` is false in the case that matters — the user closed
-    /// the window and came back to the Dock icon — and AppKit's default handling has nothing
-    /// to reopen, since the window belongs to a SwiftUI scene. Returning false says "handled".
+    /// A Dock click. `hasVisibleWindows` is false in the two cases that matter — the window
+    /// was closed, or it is minimised — and our own handling only covers the first.
+    ///
+    /// So this returns **true**, not false: "handled" would suppress AppKit's default
+    /// reopen, and that default is what deminiaturises a minimised window. Returning true
+    /// keeps it, and `focusMainWindow` supplements it for the closed-window case, where
+    /// AppKit has nothing to restore because the window belongs to a SwiftUI scene.
     @MainActor
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         Self.focusMainWindow()
-        return false
+        return true
     }
 
     @MainActor

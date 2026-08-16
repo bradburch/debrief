@@ -10,9 +10,16 @@ import Store
 ///
 /// The hierarchy is fixed here rather than per call site because it is a product decision,
 /// not a layout one: the verdict is the headline and the mean rides along as a trend signal
-/// (see the `Advancement` doc comment). That is also why `Color.forScore` tints the mean
-/// only when there is no verdict — with one, a second colour scale competes with the
-/// headline; without one, the mean is the only signal there is.
+/// (see the `Advancement` doc comment).
+///
+/// The mean is always `.secondary`. An earlier draft tinted it with `Color.forScore` when no
+/// verdict was present, on the theory that it was then the only signal — but that is a
+/// *change* dressed as a refactor: it repainted every pre-verdict debrief in the Sessions
+/// list red or green, which is a louder claim than those rows ever made, and it made the
+/// same number mean different things in different rows. Consolidating three copies should
+/// change where the code lives, not what any of them said. (`Color.forScore` consequently
+/// has no caller; it is left in place as the shared definition of the scale, next to
+/// `forAdvancement`, for whatever surface next needs to colour a score deliberately.)
 struct ScoreBadge: View {
     /// nil for a debrief written before the verdict existed, or one not yet coached.
     let advancement: Advancement?
@@ -69,7 +76,7 @@ struct ScoreBadge: View {
                  ? String(format: "%.1f avg", overallScore)
                  : String(format: "%.1f", overallScore))
                 .font(scoreFont).monospacedDigit()
-                .foregroundStyle(advancement == nil ? Color.forScore(overallScore) : .secondary)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -81,9 +88,13 @@ struct ScoreBadge: View {
         }
     }
 
-    private var scoreFont: Font {
+    /// nil means "inherit", which is what the Sessions row did before this component existed
+    /// — its mean sat at body size beside a `.caption` verdict. Pinning it to `.caption`
+    /// here shrank a number on a screen nobody asked to have changed.
+    private var scoreFont: Font? {
         switch style {
-        case .inline, .prominent: return .caption
+        case .inline: return nil
+        case .prominent: return .caption
         case .stacked: return .caption2
         }
     }
