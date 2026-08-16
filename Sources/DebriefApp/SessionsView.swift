@@ -20,6 +20,11 @@ struct SessionsView: View {
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
+                // Planned calls are not sessions and never appear in the list below — they
+                // live in their own table precisely so they can't show up as zero-minute
+                // rows here or in Pipeline/Trends.
+                PlannedCallsSection()
+                Divider()
                 if rows.isEmpty {
                     ContentUnavailableView(
                         "No sessions yet",

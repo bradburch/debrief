@@ -1,7 +1,7 @@
 import SwiftUI
 import Store
 
-/// The stop-form: optional "From calendar" pre-fill menu, Company/Round/Notes fields, and
+/// The stop-form: optional "Pre-fill" menu (planned calls + calendar), Company/Round/Notes fields, and
 /// the Stop & Debrief button. Shared by MenuBarView's narrow popover (stacked vertically)
 /// and MainWindow's wide `RecordingBar` (laid out as a single row), so the two surfaces
 /// cannot drift out of sync with each other — see AppEnvironment.upcoming/apply for why a
@@ -15,38 +15,40 @@ struct RecordingControls: View {
     var body: some View {
         if axis == .vertical {
             VStack(alignment: .leading, spacing: 10) {
-                calendarMenu
+                prefillMenu
                 TextField("Company", text: $env.recordCompany)
                 roundPicker
                 TextField("Notes (optional)", text: $env.recordNotes)
+                criteriaNote
                 stopButton
             }
         } else {
             HStack {
-                calendarMenu
+                prefillMenu
                 TextField("Company", text: $env.recordCompany).frame(maxWidth: 200)
                 roundPicker.frame(maxWidth: 220)
                 TextField("Notes (optional)", text: $env.recordNotes)
+                criteriaNote
                 stopButton
             }
         }
     }
 
-    @ViewBuilder private var calendarMenu: some View {
-        if !env.upcoming.isEmpty {
-            Menu("From calendar") {
-                ForEach(env.upcoming, id: \.self) { item in
-                    Button {
-                        env.apply(item)
-                    } label: {
-                        // Text(verbatim:) for the company: Button("\(...)") builds a
-                        // LocalizedStringKey, so a company name containing "%" would be
-                        // parsed as a format specifier. Concatenated Text keeps the
-                        // `.time` style on the date portion.
-                        Text(verbatim: item.company) + Text(" — ") + Text(item.start, style: .time)
-                    }
-                }
-            }
+    /// Planned calls and calendar entries in one menu — `PrefillMenu` renders nothing when
+    /// both are empty, which is the normal case.
+    private var prefillMenu: some View {
+        PrefillMenu(onPlanned: { env.apply($0) }, onCalendar: { env.apply($0) })
+    }
+
+    /// The criteria are not editable here (there is no room in either surface, and they were
+    /// written when the call was planned), but they must be visible: they change how this
+    /// interview is graded, and silently carried state is how a wrong rubric goes unnoticed.
+    /// Editable per session in the debrief pane afterwards, as before.
+    @ViewBuilder private var criteriaNote: some View {
+        if !env.recordCriteria.isEmpty {
+            Label("Grading criteria applied", systemImage: "text.badge.checkmark")
+                .font(.caption).foregroundStyle(.secondary)
+                .help(env.recordCriteria)
         }
     }
 
