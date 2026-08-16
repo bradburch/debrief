@@ -122,6 +122,13 @@ extension AppDatabase {
         return cleaned.count
     }
 
+    /// Cheap existence probe, used by crash recovery: a leftover directory whose manifest
+    /// already names a session row was finalized far enough for the transcript to land, and
+    /// recovering it again would insert the same interview twice.
+    public func sessionExists(id: Int64) throws -> Bool {
+        try dbWriter.read { db in try InterviewSession.filter(key: id).fetchCount(db) > 0 }
+    }
+
     public func deleteSession(id: Int64) throws {
         try dbWriter.write { db in
             try db.execute(sql: "DELETE FROM session WHERE id = ?", arguments: [id])
@@ -145,6 +152,27 @@ extension AppDatabase {
         }
     }
 
+    /// Writes a status directly. Used to claim `running` immediately before an LLM call goes
+    /// out — so a concurrent sweep can see the session is already being coached — and to put
+    /// the previous status back when that call is *cancelled* rather than failed.
+    public func setCoachingStatus(sessionId: Int64, _ status: CoachingStatus) throws {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE session SET coachingStatus = ? WHERE id = ?",
+                           arguments: [status.rawValue, sessionId])
+        }
+    }
+
+    /// Launch-time reclaim: a `running` row can only be left behind by a process that died
+    /// mid-coach, since nothing survives the crash to finish it. Returns it to the retry
+    /// sweeps rather than stranding it in a state they all skip.
+    @discardableResult
+    public func resetRunningCoaching() throws -> Int {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE session SET coachingStatus = 'pending' WHERE coachingStatus = 'running'")
+            return db.changesCount
+        }
+    }
+
     /// Terminal, unlike `failed`: the round type is transcript-only, so there is nothing
     /// to retry. Both coaching sweeps below exclude it for that reason.
     public func markCoachingSkipped(sessionId: Int64) throws {
@@ -153,11 +181,14 @@ extension AppDatabase {
         }
     }
 
+    /// Excludes `running` as well as the two terminal states: a debrief already in flight
+    /// (from a finalize job) would otherwise be started a second time by a Retry sweep.
     public func sessionsNeedingCoaching() throws -> [InterviewSession] {
         try dbWriter.read { db in
             try InterviewSession
                 .filter(Column("coachingStatus") != "complete")
                 .filter(Column("coachingStatus") != "skipped")
+                .filter(Column("coachingStatus") != "running")
                 .filter(sql: "id IN (SELECT DISTINCT sessionId FROM transcriptSegment)")
                 .order(Column("date"))
                 .fetchAll(db)

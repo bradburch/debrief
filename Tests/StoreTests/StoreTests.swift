@@ -262,6 +262,29 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(try db.scoresByDate(roundType: .behavioral).isEmpty)
     }
 
+    /// `running` marks an LLM call in flight, so a Retry sweep must leave it alone — and a
+    /// launch must hand it back, since only a dead process can leave one behind.
+    func testRunningCoachingIsSkippedBySweepsButReclaimedOnLaunch() throws {
+        let co = try db.fetchOrCreateCompany(named: "Acme")
+        func makeSession(_ status: CoachingStatus) throws -> Int64 {
+            let s = try db.insertSession(.init(id: nil, companyId: co.id!, roundType: .behavioral,
+                                               date: Date(), durationSeconds: 60, contextNotes: "",
+                                               coachingStatus: status))
+            try db.insertSegments([.init(id: nil, sessionId: s.id!, speaker: .you, tStart: 0, text: "hello there")])
+            return s.id!
+        }
+        let running = try makeSession(.running)
+        let pending = try makeSession(.pending)
+
+        XCTAssertEqual(try db.sessionsNeedingCoaching().map(\.id), [pending])
+        // sessionsWithTranscript is deliberately untouched: it also feeds exportAll.
+        XCTAssertEqual(try db.sessionsWithTranscript().count, 2)
+
+        XCTAssertEqual(try db.resetRunningCoaching(), 1)
+        XCTAssertEqual(try db.sessionDetail(id: running)?.session.coachingStatus, .pending)
+        XCTAssertEqual(Set(try db.sessionsNeedingCoaching().map(\.id)), [running, pending])
+    }
+
     func testCustomInstructionsDefaultsEmptyAndRoundTrips() throws {
         let co = try db.fetchOrCreateCompany(named: "Acme")
         let s = try db.insertSession(.init(id: nil, companyId: co.id!, roundType: .behavioral,

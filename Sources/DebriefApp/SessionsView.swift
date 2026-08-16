@@ -145,7 +145,7 @@ struct SessionsView: View {
     @ViewBuilder
     private func statusBadge(_ status: CoachingStatus) -> some View {
         switch status {
-        case .pending: Text("coaching…").font(.caption2).foregroundStyle(.secondary)
+        case .pending, .running: Text("coaching…").font(.caption2).foregroundStyle(.secondary)
         case .failed: Text("failed").font(.caption2).foregroundStyle(.red)
         // Not a shortfall: a transcript-only round is finished when it's transcribed.
         case .skipped: Text("transcript only").font(.caption2).foregroundStyle(.secondary)

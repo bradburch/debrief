@@ -12,6 +12,9 @@ public struct CoachingService: Sendable {
     }
 
     public func coach(sessionId: Int64) async throws {
+        // Restored if the call is cancelled: a stopped re-run must leave the session exactly
+        // as it was, including a `complete` it already held.
+        var statusBeforeClaim: CoachingStatus?
         do {
             guard let detail = try db.sessionDetail(id: sessionId) else {
                 throw ClaudeError.emptyResponse
@@ -41,6 +44,11 @@ public struct CoachingService: Sendable {
             Transcript:
             \(transcript)
             """
+            // Claimed before the await, not after: coaching now runs concurrently with a
+            // later recording's finalize and with the Retry sweep, and `running` is what
+            // keeps a second caller from billing a duplicate call for this session.
+            statusBeforeClaim = detail.session.coachingStatus
+            try db.setCoachingStatus(sessionId: sessionId, .running)
             let result = try await llm.generateCoaching(systemPrompt: system, userMessage: user,
                                                         dimensions: dimensions)
 
@@ -67,6 +75,11 @@ public struct CoachingService: Sendable {
             // failure and must stay retryable.
             if !Task.isCancelled {
                 try? db.markCoachingFailed(sessionId: sessionId)
+            } else if let statusBeforeClaim {
+                // Undo the `running` claim. Leaving it would be worse than the old no-op:
+                // `running` is excluded from every sweep, so a stopped re-run would strand
+                // the session until the next launch reclaimed it.
+                try? db.setCoachingStatus(sessionId: sessionId, statusBeforeClaim)
             }
             throw error
         }
