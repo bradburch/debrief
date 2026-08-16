@@ -69,6 +69,12 @@ public struct AnthropicClient: CoachingLLM {
                 "advancement": ["type": "string", "enum": Advancement.allCases.map(\.rawValue)],
                 "advancement_rationale": ["type": "string"],
                 "weakness_tags": ["type": "array", "items": ["type": "string"]],
+                // No minItems: base.md requires 3-5 highlights, but the API refuses to enforce
+                // it. Tried "minItems": 3 against the real Messages API (2026-08-15) and got a
+                // 400 — "For 'array' type, 'minItems' values other than 0 or 1 are not
+                // supported". Same family as the minimum/maximum ban on integers above: the
+                // count lives in the prompt text only, and nothing downstream fails a debrief
+                // that comes back with two.
                 "highlights": [
                     "type": "array",
                     "items": [

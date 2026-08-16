@@ -149,6 +149,28 @@ final class OpenAICompatibleClientTests: XCTestCase {
         for a in Advancement.allCases { XCTAssertTrue(appendix.contains(a.rawValue), a.rawValue) }
     }
 
+    /// base.md asks for 3-5 highlights; the Anthropic path can't enforce it (the API refuses
+    /// `minItems` above 1), so on this path the appendix prose is the ONLY pressure there is.
+    /// If base.md's count changes and the appendix doesn't, local-LLM debriefs quietly keep
+    /// returning the old shape.
+    func testFormatAppendixMirrorsTheHighlightsRule() throws {
+        let appendix = OpenAICompatibleClient.formatAppendix(dimensions: Self.dims)
+        XCTAssertTrue(appendix.contains("\"highlights\": 3-5 items"), appendix)
+        XCTAssertTrue(appendix.contains("genuine strength"))
+        XCTAssertTrue(DefaultPrompts.base.contains("highlights: 3-5 specific moments"),
+                      "base.md and the format appendix disagree on the highlight count")
+        // The example object must not model a shape the rules forbid.
+        let exampleData = try XCTUnwrap(OpenAICompatibleClient.candidateObjects(in: appendix)
+            .first { String(data: $0, encoding: .utf8)?.contains(OpenAICompatibleClient.exampleProse) == true },
+            "the appendix no longer contains its illustrative example object")
+        let example = try XCTUnwrap(JSONSerialization.jsonObject(with: exampleData) as? [String: Any])
+        let highlights = try XCTUnwrap(example["highlights"] as? [Any])
+        XCTAssertGreaterThanOrEqual(highlights.count, 3)
+        let actionItems = try XCTUnwrap(example["action_items"] as? [Any])
+        XCTAssertTrue((2...5).contains(actionItems.count),
+                      "the appendix says 2-5 action items; the example must model that")
+    }
+
     func testCandidateObjectsEdgeCases() {
         // Unclosed think tag: the tag isn't stripped, so a brace fragment inside
         // the un-terminated reasoning can still be extracted here (accepted
