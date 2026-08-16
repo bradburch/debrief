@@ -151,6 +151,17 @@ extension RecordingCoordinator {
 }
 
 @MainActor
+extension RecordingCoordinator {
+    /// Test convenience for the common "stop and wait for the debrief" shape. Production
+    /// code deliberately does not wait — `stopAndFinalize` returns as soon as the audio is
+    /// on disk so the next interview can start.
+    func stopAndAwait(metadata: SessionMetadata) async -> Int64? {
+        guard let job = await stopAndFinalize(metadata: metadata) else { return nil }
+        return await awaitFinalize(job)
+    }
+}
+
+@MainActor
 final class RecordingCoordinatorTests: XCTestCase {
     func makeCoordinator(root: URL, db: AppDatabase, deleteAudio: Bool = true,
                          transcriber: Transcribing = FakeTranscriber(textForChunk: "final"),
