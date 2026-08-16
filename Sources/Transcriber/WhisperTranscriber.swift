@@ -8,6 +8,13 @@ public enum WhisperModel: String, Sendable {
 public actor WhisperTranscriber: Transcribing {
     private let model: WhisperModel
     private var pipeTask: Task<WhisperKit, Error>?
+    /// One pipeline, one transcription at a time. Being an actor is not enough: the actor
+    /// releases at every `await`, so the live loop of a recording that started while an
+    /// earlier session was finalizing would run `pipe.transcribe` *inside* the finalize's
+    /// own call. WhisperKit holds per-transcription state on the pipeline, so that returns
+    /// crossed or truncated text rather than crashing. `loadedPipe()`'s task-dedup already
+    /// handles the load; this covers the decode.
+    private let queue = SerialQueue()
 
     /// Matches Whisper special tokens like <|startoftranscript|>, <|en|>, <|0.00|>.
     private static let specialTokenRegex = try! NSRegularExpression(pattern: "<\\|[^|]*\\|>")
@@ -15,6 +22,10 @@ public actor WhisperTranscriber: Transcribing {
     public init(model: WhisperModel) { self.model = model }
 
     public func transcribe(wavURL: URL) async throws -> [TimedText] {
+        try await queue.run { try await self.runTranscribe(wavURL: wavURL) }
+    }
+
+    private func runTranscribe(wavURL: URL) async throws -> [TimedText] {
         let pipe = try await loadedPipe()
         // WhisperKit 0.18.0 resolves `transcribe(audioPath:)` to an ambiguous overload
         // (`TranscriptionResult?` vs `[TranscriptionResult]`) without an explicit type
