@@ -159,6 +159,7 @@ struct RecordingBar: View {
                     } label: {
                         Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
                     }
+                    .buttonStyle(.borderedProminent)   // the one thing to do on an idle bar
                 }
             }
             if !env.coordinator.finalizeJobs.isEmpty {

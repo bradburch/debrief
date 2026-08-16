@@ -68,6 +68,9 @@ struct MenuBarView: View {
             Label(env.callDetected ? "Record this call" : "Start recording",
                   systemImage: "record.circle")
         }
+        // The popover's primary action while idle. "Plan a call…" stays secondary — one
+        // prominent button per surface, or none of them reads as the answer.
+        .buttonStyle(.borderedProminent)
         // The sheet itself is presented by MainWindow: a MenuBarExtra window can't present
         // one, so this sets the draft and brings up the window that can.
         Button {

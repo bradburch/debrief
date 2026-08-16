@@ -23,17 +23,16 @@ struct SessionsView: View {
                 // Planned calls are not sessions and never appear in the list below — they
                 // live in their own table precisely so they can't show up as zero-minute
                 // rows here or in Pipeline/Trends.
-                PlannedCallsSection()
-                Divider()
+                if !env.plannedCalls.isEmpty {
+                    PlannedCallsSection()
+                    Divider()
+                }
                 if rows.isEmpty {
                     ContentUnavailableView(
                         "No sessions yet",
                         systemImage: "waveform",
                         description: Text("Click Record in the menu bar when a call starts."))
                 } else {
-                    TextField("Filter by company", text: $filterText)
-                        .textFieldStyle(.roundedBorder)
-                        .padding(8)
                     if filteredRows.isEmpty {
                         ContentUnavailableView.search(text: filterText)
                     } else {
@@ -61,11 +60,13 @@ struct SessionsView: View {
                                 }
                                 .tag(row.session.id!)
                                 .contextMenu {
-                                    Button("Delete", role: .destructive) {
+                                    Button(role: .destructive) {
                                         // If the right-clicked row isn't in the current multi-selection,
                                         // act on just that row (standard Finder behavior).
                                         if !selection.contains(row.session.id!) { selection = [row.session.id!] }
                                         confirmingDelete = true
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
                                     }
                                 }
                             }
@@ -109,11 +110,27 @@ struct SessionsView: View {
         .onAppear {
             reload()
             revealPendingSession()
+            // Owned here, not by PlannedCallsSection: that section renders nothing when the
+            // list is empty, and a view that resolves to no content is exactly the one
+            // SwiftUI may never call `onAppear` on — so the refresh that would populate it
+            // would never run. Same trap `PrefillMenu` documents.
+            env.refreshPlannedCalls()
         }
         // A finalize no longer ends by returning the coordinator to .idle — it ends on its
         // own job, and the next recording may already be running. The completion counter is
         // the signal that a session may have appeared (or failed to).
         .onReceive(env.coordinator.$finalizeCompletions) { _ in reload() }
+        // Replaces a hand-rolled TextField in the sidebar. Same filter, standard place: the
+        // search field belongs in the window's toolbar on macOS, not stacked above the list.
+        .searchable(text: $filterText, prompt: "Filter by company")
+        .toolbar {
+            ToolbarItem {
+                Button { env.planningCall = PlannedCallDraft() } label: {
+                    Label("Plan a call", systemImage: "calendar.badge.plus")
+                }
+                .help("Plan an upcoming interview so its criteria reach the first debrief")
+            }
+        }
     }
 
     private func reload() { rows = (try? env.db.allSessionSummaries()) ?? [] }

@@ -57,7 +57,11 @@ struct RecoveryPrompt: View {
                 .help(criteria)
             }
             HStack {
-                Button("Discard") { env.discard(dir) }
+                // Discarding throws away audio that cannot be re-recorded — say so with the
+                // role. Recover stays an ordinary button: the popover may stack several of
+                // these above a prominent "Start recording", and a column of blue buttons
+                // makes none of them read as the primary action.
+                Button("Discard", role: .destructive) { env.discard(dir) }
                 Spacer()
                 Button("Recover") {
                     isRecovering = true

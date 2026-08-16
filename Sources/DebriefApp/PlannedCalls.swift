@@ -76,6 +76,7 @@ struct PlannedCallEditor: View {
                     env.savePlannedCall(draft)
                     dismiss()
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!draft.isValid)
             }
@@ -100,14 +101,12 @@ struct PlannedCallsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Upcoming").font(.caption).bold().foregroundStyle(.secondary)
-                Spacer()
-                Button { env.planningCall = PlannedCallDraft() } label: {
-                    Label("Plan a call", systemImage: "calendar.badge.plus")
-                }
-                .labelStyle(.iconOnly).buttonStyle(.borderless).help("Plan a call")
-            }
+            // "Plan a call" used to live here as an icon button. It is a Sessions-level
+            // action, so it moved to the window toolbar — leaving this an ordinary list
+            // header, which is also what lets SessionsView hide the whole section when
+            // there is nothing upcoming.
+            Text("Upcoming").font(.caption).bold().foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(env.plannedCalls) { plan in
                 Button { env.planningCall = PlannedCallDraft(plan) } label: {
                     VStack(alignment: .leading, spacing: 1) {
@@ -122,15 +121,21 @@ struct PlannedCallsSection: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
-                    Button("Edit…") { env.planningCall = PlannedCallDraft(plan) }
-                    Button("Delete", role: .destructive) {
+                    Button { env.planningCall = PlannedCallDraft(plan) } label: {
+                        Label("Edit…", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
                         if let id = plan.id { env.deletePlannedCall(id: id) }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
                     }
                 }
             }
         }
         .padding(8)
-        .onAppear { env.refreshPlannedCalls() }
+        // The refresh lives on SessionsView, not here: this section is conditional on the
+        // list being non-empty, so an `onAppear` of its own would never run in the one state
+        // that needs it.
     }
 }
 

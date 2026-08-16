@@ -7,6 +7,20 @@ struct PipelineView: View {
     @State private var pipelines: [CompanyPipeline] = []
 
     var body: some View {
+        Group {
+            if pipelines.isEmpty {
+                ContentUnavailableView(
+                    "No pipeline yet",
+                    systemImage: "building.2",
+                    description: Text("Record an interview and its company appears here, round by round."))
+            } else {
+                pipelineList
+            }
+        }
+        .onAppear(perform: reload)
+    }
+
+    private var pipelineList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 ForEach(pipelines) { pipe in
@@ -44,21 +58,20 @@ struct PipelineView: View {
                         HStack {
                             Text(pipe.company.name).font(.headline)
                             Spacer()
-                            Picker("", selection: statusBinding(for: pipe.company)) {
+                            // Titled, then hidden: an empty-string label leaves VoiceOver
+                            // announcing an unnamed pop-up in a view with one per company.
+                            Picker("Status", selection: statusBinding(for: pipe.company)) {
                                 ForEach(CompanyStatus.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                             }
+                            .labelsHidden()
+                            .accessibilityLabel("Status for \(pipe.company.name)")
                             .frame(width: 110)
                         }
                     }
                 }
-                if pipelines.isEmpty {
-                    Text("No sessions yet. Record an interview to start your pipeline.")
-                        .foregroundStyle(.secondary)
-                }
             }
             .padding()
         }
-        .onAppear(perform: reload)
     }
 
     private func reload() { pipelines = (try? env.db.pipeline()) ?? [] }

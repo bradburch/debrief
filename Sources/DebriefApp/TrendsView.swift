@@ -9,14 +9,39 @@ struct TrendsView: View {
     @State private var roundFilter: RoundType?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+        Group {
+            if tagCounts.isEmpty && scorePoints.isEmpty {
+                ContentUnavailableView(
+                    "Nothing to trend yet",
+                    systemImage: "chart.line.uptrend.xyaxis",
+                    description: Text(roundFilter == nil
+                                      ? "Trends build up once a few interviews have been debriefed."
+                                      : "No debriefed interviews of this round type yet."))
+            } else {
+                charts
+            }
+        }
+        .onAppear(perform: reload)
+        .onChange(of: roundFilter) { _, _ in reload() }
+        // The filter is a view-wide control, not a chart's own axis, so it belongs in the
+        // window toolbar rather than floating above the first GroupBox.
+        .toolbar {
+            ToolbarItem {
                 Picker("Round type", selection: $roundFilter) {
                     Text("All rounds").tag(RoundType?.none)
-                    ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag(RoundType?.some($0)) }
+                    ForEach(env.prompts.availableRoundTypes(), id: \.self) {
+                        Text($0.displayName).tag(RoundType?.some($0))
+                    }
                 }
-                .frame(width: 260)
+                .frame(minWidth: 160)
+                .help("Score dimensions differ per round type, so trends are only comparable within one")
+            }
+        }
+    }
 
+    private var charts: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
                 GroupBox("Weakness tags per month") {
                     if tagCounts.isEmpty {
                         Text("No tagged feedback yet.").foregroundStyle(.secondary).padding()
@@ -37,28 +62,35 @@ struct TrendsView: View {
                         // ScorePoint has no stable identity of its own, and two dimensions
                         // scored on the same session share the same date — keying the chart
                         // by \.date alone would collide. Wrap locally with a composite
-                        // (date + dimension) identity instead of touching Store's public type.
+                        // (date + series) identity instead of touching Store's public type.
                         Chart(identifiableScorePoints) { p in
                             LineMark(x: .value("Date", p.date),
                                      y: .value("Score", p.score),
-                                     series: .value("Dimension", p.dimension))
-                            .foregroundStyle(by: .value("Dimension", p.dimension))
+                                     series: .value("Dimension", p.series))
+                            .foregroundStyle(by: .value("Dimension", p.series))
                             PointMark(x: .value("Date", p.date), y: .value("Score", p.score))
-                                .foregroundStyle(by: .value("Dimension", p.dimension))
+                                .foregroundStyle(by: .value("Dimension", p.series))
                         }
-                        .chartYScale(domain: 0...5)
+                        // Scores are a 1–5 forced choice; a 0 is not a bad score, it is not
+                        // a score. Anchoring the axis at 0 spent a fifth of the plot on a
+                        // value that can never appear and flattened the range that can.
+                        .chartYScale(domain: 1...5)
                         .frame(height: 240)
                     }
                 }
             }
             .padding()
         }
-        .onAppear(perform: reload)
-        .onChange(of: roundFilter) { _, _ in reload() }
     }
 
+    /// Split by round type only in the unfiltered view. `technical_depth` and
+    /// `quantified_impact` are declared by two overlays with different definitions, so
+    /// across all rounds one line labelled `technical_depth` silently averages two different
+    /// questions. Within a single round type there is nothing to disambiguate, and the
+    /// suffix would just be noise on every legend entry.
     private var identifiableScorePoints: [IdentifiableScorePoint] {
-        scorePoints.map(IdentifiableScorePoint.init)
+        let splitByRound = roundFilter == nil
+        return scorePoints.map { IdentifiableScorePoint(point: $0, splitByRound: splitByRound) }
     }
 
     private func reload() {
@@ -68,11 +100,19 @@ struct TrendsView: View {
 }
 
 /// Local wrapper giving `ScorePoint` a chart-safe composite identity
-/// (date + dimension) without changing Store's public `ScorePoint` shape.
+/// (date + series) without changing Store's public `ScorePoint` shape.
 private struct IdentifiableScorePoint: Identifiable {
     let point: ScorePoint
-    var id: String { "\(point.date.timeIntervalSince1970)|\(point.dimension)" }
+    let series: String
+
+    init(point: ScorePoint, splitByRound: Bool) {
+        self.point = point
+        self.series = splitByRound
+            ? "\(point.dimension) (\(point.roundType.displayName))"
+            : point.dimension
+    }
+
+    var id: String { "\(point.date.timeIntervalSince1970)|\(series)" }
     var date: Date { point.date }
-    var dimension: String { point.dimension }
     var score: Int { point.score }
 }
