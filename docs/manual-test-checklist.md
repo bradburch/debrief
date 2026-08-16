@@ -142,6 +142,12 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
       each call ("banana banana" in the first, "helicopter helicopter" in the second) and
       confirm each phrase lands in its own session, on the right speaker track. Both sessions
       have a `mic-0000.wav`, so a cache regression shows up exactly here.
+    - **The first session's tail does not contain the second's opening.** Start the second
+      call the instant the first stops, and have the *other side* speak first in it. Then read
+      the END of session one's transcript: any of the second call's THEM audio appearing there
+      means a second capture opened while the first was still being torn down — the failure
+      mode that ordering `recordingPhase = .idle` after the recorder stops exists to prevent,
+      and the one a swapped-transcript check alone would not catch.
     - Both sessions appear in Sessions with their own company, duration, and debrief, and the
       list refreshes on its own as each job finishes.
     - Recover an old directory from the recovery prompt *while* a recording is in progress:
