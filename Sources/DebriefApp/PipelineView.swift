@@ -18,22 +18,12 @@ struct PipelineView: View {
                                 Button { env.revealSession(s.id) } label: {
                                     VStack(spacing: 4) {
                                         Text(s.roundType.displayName).font(.caption)
-                                        // This view IS the advancement story, so the verdict leads
-                                        // and the mean is a subscript. A pre-v3 debrief has a score
-                                        // but no verdict; an uncoached session has neither.
-                                        if let advancement = s.advancement {
-                                            Text(advancement.displayName).bold()
-                                                .foregroundStyle(Color.forAdvancement(advancement))
-                                        } else if s.overallScore != nil {
-                                            Text("—").foregroundStyle(.secondary)
-                                                .help("Debriefed before verdicts existed — re-run in Settings.")
-                                        } else {
-                                            Text("—").foregroundStyle(.secondary)
-                                        }
-                                        if let score = s.overallScore {
-                                            Text(String(format: "%.1f", score)).font(.caption2).monospacedDigit()
-                                                .foregroundStyle(.secondary)
-                                        }
+                                        // This view IS the advancement story, so the verdict
+                                        // leads and the mean is a subscript — and every cell
+                                        // keeps its shape when either is missing.
+                                        ScoreBadge(advancement: s.advancement,
+                                                   overallScore: s.overallScore,
+                                                   style: .stacked, showsPlaceholder: true)
                                         Text(s.date.formatted(date: .numeric, time: .omitted))
                                             .font(.caption2).foregroundStyle(.secondary)
                                     }

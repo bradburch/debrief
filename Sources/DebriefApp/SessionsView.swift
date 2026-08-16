@@ -44,18 +44,8 @@ struct SessionsView: View {
                                     HStack(spacing: 6) {
                                         Text(row.companyName).bold()
                                         Spacer()
-                                        // Verdict is the headline; the mean rides alongside as a
-                                        // trend signal. Pre-v3 debriefs have no verdict and show
-                                        // the score alone until re-coached.
-                                        if let advancement = row.advancement {
-                                            Text(advancement.displayName)
-                                                .font(.caption).bold()
-                                                .foregroundStyle(Color.forAdvancement(advancement))
-                                        }
-                                        if let score = row.overallScore {
-                                            Text(String(format: "%.1f", score)).monospacedDigit()
-                                                .foregroundStyle(.secondary)
-                                        }
+                                        ScoreBadge(advancement: row.advancement,
+                                                   overallScore: row.overallScore)
                                         // Show the badge whenever coaching isn't complete, not
                                         // just when there's no score: a re-coach that fails on
                                         // an already-complete session leaves the stale feedback
@@ -153,11 +143,29 @@ struct SessionsView: View {
     @ViewBuilder
     private func statusBadge(_ status: CoachingStatus) -> some View {
         switch status {
-        case .pending, .running: Text("coaching…").font(.caption2).foregroundStyle(.secondary)
-        case .failed: Text("failed").font(.caption2).foregroundStyle(.red)
+        case .pending: Text("Queued").font(.caption2).foregroundStyle(.secondary)
+        case .running: Text("Writing…").font(.caption2).foregroundStyle(.secondary)
+        case .failed: Text("Failed").font(.caption2).foregroundStyle(.red)
         // Not a shortfall: a transcript-only round is finished when it's transcribed.
-        case .skipped: Text("transcript only").font(.caption2).foregroundStyle(.secondary)
+        case .skipped: Text("Transcript only").font(.caption2).foregroundStyle(.secondary)
         case .complete: EmptyView()
+        }
+    }
+}
+
+extension CoachingStatus {
+    /// What to say where a debrief would be. Product copy, not the raw case name: this sits
+    /// in the reading pane, and "No debrief yet (pending)." leaks a database value at the
+    /// reader without telling them whether to wait, retry, or stop expecting one.
+    var debriefPlaceholder: String {
+        switch self {
+        case .pending: return "Debrief queued…"
+        case .running: return "Writing debrief…"
+        case .failed: return "Debrief failed — retry from Settings"
+        case .skipped: return "Practice round — transcript only"
+        // Unreachable while a complete session has its feedback row, which is the point of
+        // saying something rather than rendering an empty pane if that ever stops holding.
+        case .complete: return "No debrief for this session."
         }
     }
 }
@@ -326,13 +334,8 @@ struct SessionDetailView: View {
                     if let advancement = f.advancementValue {
                         GroupBox {
                             VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(advancement.displayName).font(.title2).bold()
-                                        .foregroundStyle(Color.forAdvancement(advancement))
-                                    Spacer()
-                                    Text(String(format: "%.1f avg", f.overallScore))
-                                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                                }
+                                ScoreBadge(advancement: advancement,
+                                           overallScore: f.overallScore, style: .prominent)
                                 if !f.advancementRationale.isEmpty {
                                     Text(f.advancementRationale)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -343,10 +346,16 @@ struct SessionDetailView: View {
                     }
                     if !d.tags.isEmpty {
                         HStack {
+                            // Informational tags, not errors: these name what to work on
+                            // next, and a red capsule per tag read as a row of alarms even
+                            // on a Strong Yes. The verdict above is the only thing on this
+                            // pane that gets to carry a colour judgement.
                             ForEach(d.tags, id: \.self) { tag in
-                                Text(tag).font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(.red.opacity(0.15), in: Capsule())
+                                Text(tag).font(.caption).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 8).padding(.vertical, 3)
+                                    .background(.quaternary, in: Capsule())
                             }
+                            Spacer()
                         }
                     }
                     // Above Highlights and the prose: what happens next is the most
@@ -390,8 +399,13 @@ struct SessionDetailView: View {
                             }
                         }
                     }
+                    // The one long-form read in the app. Capped measure and looser leading
+                    // for the same reason any prose gets them: at full pane width on a wide
+                    // display the eye loses the line.
                     Text(LocalizedStringKey(f.proseDebrief))  // renders markdown
                         .textSelection(.enabled)
+                        .lineSpacing(4)
+                        .frame(maxWidth: 680, alignment: .leading)
                     if let items = try? JSONDecoder().decode([String].self,
                                                              from: f.actionItemsJSON.data(using: .utf8)!),
                        !items.isEmpty {
@@ -405,7 +419,8 @@ struct SessionDetailView: View {
                          + "The transcript is on the right.")
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("No debrief yet (\(d.session.coachingStatus.rawValue)).")
+                    Text(d.session.coachingStatus.debriefPlaceholder)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding()
