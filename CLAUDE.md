@@ -97,9 +97,23 @@ tell application "System Events" to tell process "Debrief" to click menu item "D
 **The `activate` is load-bearing.** Without it the click reports success and the window
 count stays 0 — a silent no-op, not an error.
 
+Debrief is **not** `LSUIElement`: it has a Dock icon as well as the menu-bar item, so
+`tell process "Dock" to click UI element "Debrief" of list 1` opens the window too. Dropping
+that key did **not** make the `Window` scene open at launch — the app still starts at zero
+windows, which is why `AppDelegate.openMainWindow` is armed from the menu-bar *label* (the
+only view rendered from launch) rather than from `MainWindow`.
+
 Then drive it via System Events accessibility. Useful paths (macOS 15, verified):
 - sidebar tabs: `outline 1 of scroll area 1 of group 1 of splitter group 1 of group 1 of window 1` → `select row N` (1=Sessions, 2=Pipeline, 3=Trends, 4=Settings)
 - detail pane: `group 2 of splitter group 1 of group 1 of window 1`
+
+Two things that will waste your time here. **`window 1` is not always the main window**: an
+open MenuBarExtra popover is an `AXSystemDialog` that sorts ahead of it, so every path above
+silently resolves against the popover (`-1719`, "Invalid index") until you dismiss it — filter
+on `subrole is "AXStandardWindow"` if a popover might be up. And **toolbar items need a
+generous delay**: reading `toolbar 1 of window 1` within ~1.5s of a tab switch or a window
+reopen returns just the sidebar-toggle button, which reads exactly like "my `.toolbar` never
+rendered". Three seconds was enough; compare against a tab known to have items.
 
 AppleScript gotchas that cost real time: `right`, `st`, and other reserved words silently break scripts with confusing syntax errors; `entire contents` is flaky on large trees and returns empty rather than erroring — prefer explicit paths and `count of (groups of x)` style probes; compare a known-good state against the state under test rather than trusting one absolute reading.
 
