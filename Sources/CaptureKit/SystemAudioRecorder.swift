@@ -27,7 +27,7 @@ import os
 public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sendable {
     public var onLevel: (@Sendable (Float) -> Void)?
 
-    private let writer: WavChunkWriter
+    private let writer: WavChunkWriter?
     private let queue = DispatchQueue(label: "debrief.sys-writer")
     private static let logger = Logger(subsystem: "com.debrief.app", category: "capture")
 
@@ -46,7 +46,12 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
     var captureStart: CFAbsoluteTime = 0
     var framesWritten: Int64 = 0
 
-    public init(writer: WavChunkWriter) { self.writer = writer }
+    /// `writer` is optional: with `nil` the tap is still created and `onLevel` still
+    /// fires, but nothing is written. That is the level-monitor mode the menu-bar popover
+    /// uses to show output level before you commit to a recording — deliberately a nil
+    /// writer rather than one aimed at a scratch directory, because any session directory
+    /// under the recordings root would be read back as a phantom crash recovery.
+    public init(writer: WavChunkWriter?) { self.writer = writer }
 
     public func start() async throws {
         framesWritten = 0
@@ -126,7 +131,8 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
                 // Trailing pad so the system track spans the whole recording, matching
                 // the continuously-streaming mic track.
                 if let tapFormat = self.tapFormat { self.padSilenceToNow(format: tapFormat) }
-                do { try self.writer.finish(); cont.resume() } catch { cont.resume(throwing: error) }
+                guard let writer = self.writer else { cont.resume(); return }
+                do { try writer.finish(); cont.resume() } catch { cont.resume(throwing: error) }
             }
         }
     }
@@ -156,6 +162,7 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
             loggedFirstBuffer = true
             Self.logger.info("SystemAudioRecorder: first tap buffer delivered")
         }
+        guard let writer else { return }
         do {
             try writer.append(pcm)
             framesWritten += Int64(pcm.frameLength)
@@ -190,6 +197,9 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
         // Below ~20ms it's IOProc jitter, not a gap worth representing.
         guard missing > Int64(format.sampleRate / 50) else { return }
         onLevel?(0)  // the level bar should read silent, not freeze at its last value
+        // Metering-only mode has no timeline to keep aligned; the `onLevel?(0)` above is
+        // the whole point of getting here, so stop before reconstructing silence.
+        guard let writer else { return }
         while missing > 0 {
             let frames = AVAudioFrameCount(min(missing, Int64(format.sampleRate)))  // ≤1s per piece
             guard let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }

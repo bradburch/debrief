@@ -172,3 +172,25 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
       "Keep raw audio after transcription"** on (and a relaunch to take effect) — with it off
       the whole session directory is deleted on success, so there is nothing left to re-offer
       and the stamp is never exercised.
+21. **Idle level meters in the popover**: the menu-bar popover now shows detection state and
+    both level meters in *every* phase, not just while recording — the point is to catch a
+    dead capture path before an interview rather than after one.
+    - With nothing recording, open the popover and speak. "You" must move within a second or
+      so, and the header must read "No call detected" (or "Call detected" if one is live) —
+      never a blank space, which is ambiguous between no call and broken detection.
+    - Play audio through the output device. "Them" must move. This is the meter that matters:
+      a system tap that runs and delivers digital silence is the failure that shipped, and a
+      flat "Them" bar against audible sound is exactly what it looks like.
+    - **Close the popover and confirm the macOS mic indicator goes out.** Monitoring holds the
+      real input device, so a stuck indicator means the streams were not released — check for
+      an orange dot in the menu bar with the popover shut and nothing recording.
+    - Press Record straight from the popover (the case where the monitor and the real
+      recorders race for the same device): recording must start normally, the meters must keep
+      moving, and the resulting `mic-*.wav` / `sys-*.wav` must contain real audio, not zeros.
+      Item 16's RMS script is the check.
+    - Confirm no session directory appears under `recordings/` from monitoring alone, and that
+      the next launch offers no recovery prompt for a call that never happened.
+    - Deny Microphone access in System Settings, relaunch, and open the popover: the meters
+      must sit dark under "Levels unavailable — check Microphone and system-audio
+      permissions", and `recordingPhase` must stay idle — opening the popover must never
+      report a *recording* failure.

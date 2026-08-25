@@ -5,18 +5,25 @@ import os
 /// Captures the default input device via AVAudioEngine and streams buffers
 /// into a WavChunkWriter (which converts to 16k mono Int16).
 ///
+/// `writer` is optional: with `nil` the recorder still opens the device and
+/// reports `onLevel`, but writes nothing. That is the level-monitor mode the
+/// menu-bar popover uses to show input before you commit to a recording.
+/// It must stay a nil writer rather than a scratch-directory one — anything
+/// that creates a session directory under the recordings root would be picked
+/// up by `RecordingStore.unfinalizedSessions()` as a phantom crash recovery.
+///
 /// Hardware capture is not exercised by the unit test suite — permissions and
 /// a real input device aren't available in CI/sandbox environments. Manual
 /// verification is covered by the Task 16 checklist.
 public final class MicRecorder: StreamRecorder, @unchecked Sendable {
     public var onLevel: (@Sendable (Float) -> Void)?
 
-    private let writer: WavChunkWriter
+    private let writer: WavChunkWriter?
     private let engine = AVAudioEngine()
     private let queue = DispatchQueue(label: "debrief.mic-writer")
     private static let logger = Logger(subsystem: "com.debrief.app", category: "capture")
 
-    public init(writer: WavChunkWriter) { self.writer = writer }
+    public init(writer: WavChunkWriter?) { self.writer = writer }
 
     public func start() async throws {
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
@@ -29,9 +36,10 @@ public final class MicRecorder: StreamRecorder, @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self else { return }
             self.onLevel?(LevelMeter.rms(buffer))
+            guard let writer = self.writer else { return }
             self.queue.async {
                 do {
-                    try self.writer.append(buffer)
+                    try writer.append(buffer)
                 } catch {
                     Self.logger.error("MicRecorder: writer.append failed: \(String(describing: error), privacy: .public)")
                 }
@@ -54,9 +62,10 @@ public final class MicRecorder: StreamRecorder, @unchecked Sendable {
         // End-to-end verification of stop() behavior against real hardware is
         // covered by Task 16's manual checklist.
         queue.sync {}
+        guard let writer else { return }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async {
-                do { try self.writer.finish(); cont.resume() } catch { cont.resume(throwing: error) }
+                do { try writer.finish(); cont.resume() } catch { cont.resume(throwing: error) }
             }
         }
     }

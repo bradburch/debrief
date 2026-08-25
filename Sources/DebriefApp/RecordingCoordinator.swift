@@ -105,8 +105,34 @@ public final class RecordingCoordinator: ObservableObject {
 
     @Published private var live: LiveSession?
 
-    public var micLevel: Float { live?.micLevel ?? 0 }
-    public var systemLevel: Float { live?.systemLevel ?? 0 }
+    /// A pair of writer-less recorders open purely to drive the level meters while nothing
+    /// is being recorded, so you can see that mic and system audio are actually arriving
+    /// *before* committing to an interview. Held only while something is watching (the
+    /// popover) — see `startMonitoring`.
+    ///
+    /// Deliberately a separate field from `live` rather than a `LiveSession` with a nil
+    /// writer: everything that reads `live` treats it as "an interview is being captured"
+    /// — `activeDirs`, the recovery filter, the start guard — and a monitor is none of
+    /// those things.
+    private struct Monitor {
+        let mic: StreamRecorder
+        let sys: StreamRecorder
+    }
+    private var monitor: Monitor?
+    /// Bumped by every start and every stop. Serves the same role `LiveSession.key` serves
+    /// for a recording: a level callback (or a `start()` that finished late) from a monitor
+    /// nobody holds any more must not drive the meter or leave a device open.
+    private var monitorGeneration = 0
+    @Published private var monitorMicLevel: Float = 0
+    @Published private var monitorSystemLevel: Float = 0
+
+    /// True while the writer-less meters are open. Lets the UI distinguish "0 because the
+    /// line is silent" from "0 because nothing is listening" — the difference between a
+    /// working setup and a broken one, which is the entire reason these meters exist.
+    public var isMonitoring: Bool { monitor != nil }
+
+    public var micLevel: Float { live?.micLevel ?? monitorMicLevel }
+    public var systemLevel: Float { live?.systemLevel ?? monitorSystemLevel }
     public var streamWarning: String? { live?.streamWarning }
     /// Live-loop progress for the recording in flight. Finalize progress lives on the job.
     public var transcribeProgress: TranscribeProgress? { live?.transcribeProgress }
@@ -125,8 +151,8 @@ public final class RecordingCoordinator: ObservableObject {
     /// auto-debrief without relaunching (AppEnvironment.rebuildCoaching reassigns it).
     public var coaching: CoachingService
     private let transcriber: Transcribing
-    private let makeMicRecorder: (WavChunkWriter) -> StreamRecorder
-    private let makeSystemRecorder: (WavChunkWriter) -> StreamRecorder
+    private let makeMicRecorder: (WavChunkWriter?) -> StreamRecorder
+    private let makeSystemRecorder: (WavChunkWriter?) -> StreamRecorder
     private let recordingsRoot: URL
     private let chunkDuration: TimeInterval
     private let deleteAudioOnSuccess: Bool
@@ -155,8 +181,8 @@ public final class RecordingCoordinator: ObservableObject {
     public init(db: AppDatabase,
                 coaching: CoachingService,
                 transcriber: Transcribing,
-                makeMicRecorder: @escaping (WavChunkWriter) -> StreamRecorder,
-                makeSystemRecorder: @escaping (WavChunkWriter) -> StreamRecorder,
+                makeMicRecorder: @escaping (WavChunkWriter?) -> StreamRecorder,
+                makeSystemRecorder: @escaping (WavChunkWriter?) -> StreamRecorder,
                 recordingsRoot: URL = RecordingStore.recordingsRoot(),
                 chunkDuration: TimeInterval = 30,
                 deleteAudioOnSuccess: Bool = true,
@@ -184,6 +210,11 @@ public final class RecordingCoordinator: ObservableObject {
         }
         let startedAt = Date()
         recordingPhase = .recording(started: startedAt)
+        // After the claim above, before the real recorders open: the monitor is holding the
+        // same input device and process tap, and the popover's `onDisappear` is not a
+        // reliable release point (pressing Record dismisses the popover, so the two race).
+        // The claim is already taken, so `startMonitoring` cannot re-open them behind us.
+        await stopMonitoring()
         // Held outside the `do` so the catch can stop whatever was already started. `.failed`
         // is a startable state, so without this a retry after a half-started pair leaves the
         // first recorder's tap live — orphaned recorders stack up, keep capturing, and the
@@ -225,6 +256,71 @@ public final class RecordingCoordinator: ObservableObject {
             try? await mic?.stop()
             try? await sys?.stop()
             recordingPhase = .failed(message: "Could not start recording: \(error.localizedDescription)")
+        }
+    }
+
+    /// Open writer-less mic + system streams so the level meters read live while idle.
+    /// Idempotent, and a no-op once a real recording owns the devices.
+    ///
+    /// Callers pair this with `stopMonitoring` on the same surface appearing/disappearing;
+    /// nothing here keeps the devices open past that, which is what keeps the macOS mic
+    /// indicator honest about when Debrief is listening.
+    public func startMonitoring() async {
+        // Claimed before the first `await`, with no `await` in between — the same atomicity
+        // rule `startRecording` follows for `recordingPhase`, and safe for the same reason
+        // (this class is `@MainActor`). Two popover opens in the same frame would otherwise
+        // both get past the guard and leave one pair of recorders orphaned and capturing.
+        guard live == nil, monitor == nil else { return }
+        if case .recording = recordingPhase { return }
+        monitorGeneration &+= 1
+        let generation = monitorGeneration
+        let mic = makeMicRecorder(nil)
+        let sys = makeSystemRecorder(nil)
+        mic.onLevel = { [weak self] level in
+            Task { @MainActor in self?.recordMonitorLevel(level, stream: .mic, generation: generation) }
+        }
+        sys.onLevel = { [weak self] level in
+            Task { @MainActor in self?.recordMonitorLevel(level, stream: .system, generation: generation) }
+        }
+        monitor = Monitor(mic: mic, sys: sys)
+        do {
+            try await mic.start()
+            try await sys.start()
+        } catch {
+            // A refused mic or tap means no meter, and nothing more. Monitoring is a
+            // diagnostic; it must never produce the `.failed` state that a real start does,
+            // or opening the popover could report a recording failure that never happened.
+            logger.info("level monitor could not start: \(error.localizedDescription, privacy: .public)")
+        }
+        // The popover can close — or a recording can start — during those two awaits.
+        // Whoever did that bumped the generation and cleared `monitor` without being able
+        // to see recorders that had not been assigned yet, so they get stopped here.
+        guard monitorGeneration != generation else { return }
+        try? await mic.stop()
+        try? await sys.stop()
+    }
+
+    /// Release the metering streams. Safe to call when nothing is monitoring.
+    public func stopMonitoring() async {
+        guard let monitor else { return }
+        // Cleared and invalidated before the awaits, so a `startMonitoring` racing this sees
+        // a free slot and a stale generation rather than a half-torn-down pair.
+        self.monitor = nil
+        monitorGeneration &+= 1
+        monitorMicLevel = 0
+        monitorSystemLevel = 0
+        try? await monitor.mic.stop()
+        try? await monitor.sys.stop()
+    }
+
+    private func recordMonitorLevel(_ level: Float, stream: LevelStream, generation: Int) {
+        // Pinned to the generation for the same reason a recording's callbacks are pinned to
+        // its session key: a buffer already in flight when the monitor was torn down must
+        // not leave a stale reading frozen on the meter.
+        guard monitorGeneration == generation, monitor != nil else { return }
+        switch stream {
+        case .mic: monitorMicLevel = level
+        case .system: monitorSystemLevel = level
         }
     }
 

@@ -9,6 +9,11 @@ struct MenuBarView: View {
     /// this frame — including Quit — used to be pushed off-screen with no way to reach it.
     private static let maxScrollHeight: CGFloat = 420
 
+    /// Set once `startMonitoring` has actually returned, so a denied mic reads as a denied
+    /// mic instead of as silence. Not derived from `isMonitoring` directly: that is false
+    /// for the moment before the streams open, which would flash the warning on every open.
+    @State private var monitorUnavailable = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Recording state and finalize jobs are stacked, not switched between: starting
@@ -29,8 +34,14 @@ struct MenuBarView: View {
                         }
                         Divider()
                     }
-                    if case .recording(let started) = env.coordinator.recordingPhase {
-                        recordingSection(started: started)
+                    // Detection state and both meters, in EVERY phase. They used to be
+                    // split across the two branches below — "Call detected" idle-only,
+                    // the meters recording-only — which meant the popover could answer
+                    // "is Debrief hearing anything?" in neither state you actually ask it
+                    // in: before a call, and while one is being detected.
+                    signalSection
+                    if case .recording = env.coordinator.recordingPhase {
+                        recordingSection()
                     } else {
                         idleSection
                     }
@@ -52,10 +63,57 @@ struct MenuBarView: View {
         }
         .padding(12)
         .frame(width: 280)
+        .task {
+            await env.coordinator.startMonitoring()
+            // A live recording already owns the mic and the tap, so `startMonitoring`
+            // declining is the correct outcome there and must not be reported as a
+            // permissions problem — the meters are being fed by the session instead.
+            if case .recording = env.coordinator.recordingPhase {
+                monitorUnavailable = false
+            } else {
+                monitorUnavailable = !env.coordinator.isMonitoring
+            }
+            // The release point. `.task` is cancelled when the popover is torn down, so
+            // suspending here and stopping afterwards ties the mic and the system tap to
+            // "something is on screen showing them" — structurally, rather than trusting
+            // `onDisappear` to fire on a MenuBarExtra window. The hour is a backstop, not
+            // a schedule: a popover left open that long has stopped being something
+            // anyone is looking at, and holding the input device open for it is exactly
+            // the behaviour the always-on option was rejected for.
+            try? await Task.sleep(for: .seconds(3600))
+            await env.coordinator.stopMonitoring()
+        }
         // Deliberately does NOT arm AppDelegate.openMainWindow: MenuBarLabel is the only
         // registrar (see the comment on the property). This view's copy was captured from a
         // scene that can be torn down, and it overwrote a closure that is good for the life
         // of the process.
+    }
+
+    /// "Is Debrief hearing anything?" — the one question the popover exists to answer, and
+    /// the one failure mode the app cannot detect on your behalf: capture that runs, writes
+    /// correctly-sized files, and records silence. Shown in every phase, driven by the live
+    /// session while recording and by `RecordingCoordinator.startMonitoring` while idle.
+    @ViewBuilder
+    private var signalSection: some View {
+        if case .recording(let started) = env.coordinator.recordingPhase {
+            Label("Recording \(started, style: .timer)", systemImage: "record.circle.fill")
+                .foregroundStyle(.red)
+        } else if env.callDetected {
+            Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
+        } else {
+            // Stated rather than left blank. An absent line is ambiguous between "no call"
+            // and "detection is broken", and detection running is itself the thing worth
+            // confirming before you rely on it to catch the next call.
+            Label("No call detected", systemImage: "phone.down")
+                .foregroundStyle(.secondary).font(.caption)
+        }
+        LevelRow(label: "You", level: env.coordinator.micLevel)
+        LevelRow(label: "Them", level: env.coordinator.systemLevel)
+        if monitorUnavailable {
+            Label("Levels unavailable — check Microphone and system-audio permissions.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow).font(.caption).lineLimit(3)
+        }
     }
 
     @ViewBuilder
@@ -63,9 +121,6 @@ struct MenuBarView: View {
         if case .failed(let message) = env.coordinator.recordingPhase {
             Label(message, systemImage: "xmark.octagon.fill")
                 .foregroundStyle(.red).font(.caption).lineLimit(4)
-        }
-        if env.callDetected {
-            Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
         }
         Button {
             Task { await env.startRecording() }
@@ -91,11 +146,7 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
-    private func recordingSection(started: Date) -> some View {
-        Label("Recording \(started, style: .timer)", systemImage: "record.circle.fill")
-            .foregroundStyle(.red)
-        LevelRow(label: "You", level: env.coordinator.micLevel)
-        LevelRow(label: "Them", level: env.coordinator.systemLevel)
+    private func recordingSection() -> some View {
         if let warning = env.coordinator.streamWarning {
             Label(warning, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.yellow).font(.caption)
