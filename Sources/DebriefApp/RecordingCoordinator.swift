@@ -131,6 +131,13 @@ public final class RecordingCoordinator: ObservableObject {
     /// working setup and a broken one, which is the entire reason these meters exist.
     public var isMonitoring: Bool { monitor != nil }
 
+    /// Why the meters are dark, ready to show, or nil when they aren't. Per-stream rather
+    /// than one flag: a refused microphone and a refused tap are different problems with
+    /// different fixes, and a working "You" alongside a dead "Them" is the single most
+    /// important case to name — a tap that runs and delivers digital silence is the failure
+    /// this whole surface exists to expose.
+    @Published public private(set) var monitorFailure: String?
+
     public var micLevel: Float { live?.micLevel ?? monitorMicLevel }
     public var systemLevel: Float { live?.systemLevel ?? monitorSystemLevel }
     public var streamWarning: String? { live?.streamWarning }
@@ -283,21 +290,59 @@ public final class RecordingCoordinator: ObservableObject {
             Task { @MainActor in self?.recordMonitorLevel(level, stream: .system, generation: generation) }
         }
         monitor = Monitor(mic: mic, sys: sys)
-        do {
-            try await mic.start()
-            try await sys.start()
-        } catch {
-            // A refused mic or tap means no meter, and nothing more. Monitoring is a
-            // diagnostic; it must never produce the `.failed` state that a real start does,
-            // or opening the popover could report a recording failure that never happened.
-            logger.info("level monitor could not start: \(error.localizedDescription, privacy: .public)")
+        monitorFailure = nil
+        // Started independently, not in one `do`: a refused microphone must not also blind
+        // the system-audio meter. They are separate permissions and separate failure modes,
+        // and "Them" is the half worth protecting — a flat system meter is the symptom of
+        // the capture bug that actually shipped.
+        let micStarted = await startMonitorStream(mic, generation: generation)
+        let sysStarted = await startMonitorStream(sys, generation: generation)
+
+        // The popover can close, or a recording can start, while those starts are suspended
+        // (the mic's awaits a TCC prompt). Whoever did that already bumped the generation;
+        // the devices this call opened are its own to release.
+        guard monitorGeneration == generation else {
+            try? await mic.stop()
+            try? await sys.stop()
+            return
         }
-        // The popover can close — or a recording can start — during those two awaits.
-        // Whoever did that bumped the generation and cleared `monitor` without being able
-        // to see recorders that had not been assigned yet, so they get stopped here.
-        guard monitorGeneration != generation else { return }
+        monitorFailure = Self.monitorFailureMessage(micStarted: micStarted, sysStarted: sysStarted)
+        guard !micStarted, !sysStarted else { return }
+        // Nothing opened. Drop the claim rather than holding a monitor of two dead streams:
+        // `isMonitoring` is what the popover asks in order to explain itself, so leaving it
+        // true reports a working meter and suppresses the very message that says otherwise.
+        monitor = nil
+        monitorGeneration &+= 1
         try? await mic.stop()
         try? await sys.stop()
+    }
+
+    /// One monitor stream. Returns whether it opened; a refusal is logged and nothing more.
+    /// Monitoring is a diagnostic and must never produce the `.failed` state a real start
+    /// does, or opening the popover would report a recording failure nobody asked for.
+    private func startMonitorStream(_ recorder: StreamRecorder, generation: Int) async -> Bool {
+        // Re-checked immediately before the start, not just after: without this, a
+        // `stopMonitoring` that lands while the *mic* is awaiting its permission prompt
+        // still lets the system stream go on to create a global tap and aggregate device —
+        // after `startRecording` has already awaited its release point and begun opening
+        // the real recorders.
+        guard monitorGeneration == generation else { return false }
+        do {
+            try await recorder.start()
+            return true
+        } catch {
+            logger.info("level monitor stream could not start: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private static func monitorFailureMessage(micStarted: Bool, sysStarted: Bool) -> String? {
+        switch (micStarted, sysStarted) {
+        case (true, true): return nil
+        case (false, true): return "Mic level unavailable — check Microphone permission."
+        case (true, false): return "System-audio level unavailable — check audio-capture permission."
+        case (false, false): return "Levels unavailable — check Microphone and system-audio permissions."
+        }
     }
 
     /// Release the metering streams. Safe to call when nothing is monitoring.
@@ -309,6 +354,7 @@ public final class RecordingCoordinator: ObservableObject {
         monitorGeneration &+= 1
         monitorMicLevel = 0
         monitorSystemLevel = 0
+        monitorFailure = nil
         try? await monitor.mic.stop()
         try? await monitor.sys.stop()
     }

@@ -113,6 +113,29 @@ final class SystemAudioTapBufferTests: XCTestCase {
         XCTAssertEqual(try writtenSeconds(writer, dir), 2.0, accuracy: 0.1)
     }
 
+    /// Metering mode (nil writer) has no track to keep aligned, but it must still keep the
+    /// frame counter honest. With `framesWritten` pinned at 0 the wall clock runs away from
+    /// it, every buffer looks like a gap, and `onLevel?(0)` is emitted before every single
+    /// real RMS reading — two separate hops to the main actor whose order is not guaranteed,
+    /// so the "Them" bar can latch at zero while audio is audibly playing. That is a false
+    /// "the tap is dead" from the one feature built to detect a dead tap.
+    func testMeteringModeAdvancesFramesSoOnlyRealGapsReportSilence() throws {
+        let recorder = SystemAudioRecorder(writer: nil)
+        var levels: [Float] = []
+        recorder.onLevel = { levels.append($0) }
+
+        recorder.captureStart = CFAbsoluteTimeGetCurrent() - 1.0
+        recorder.padSilenceToNow(format: tapFormat)
+        XCTAssertEqual(levels, [0], "a real gap must report silence")
+        XCTAssertEqual(Double(recorder.framesWritten) / tapFormat.sampleRate, 1.0, accuracy: 0.15,
+                       "metering mode left the frame counter behind the wall clock")
+
+        // Immediately afterwards there is no gap left, so nothing more should be reported.
+        recorder.padSilenceToNow(format: tapFormat)
+        recorder.padSilenceToNow(format: tapFormat)
+        XCTAssertEqual(levels, [0], "caught up, yet silence was reported again: \(levels)")
+    }
+
     /// Recomputing from the wall clock (rather than accumulating) must make a second
     /// call a no-op once the track has caught up — otherwise every callback would
     /// re-pad and the system track would run *long* instead of short.

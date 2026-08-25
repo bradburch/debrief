@@ -162,9 +162,13 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
             loggedFirstBuffer = true
             Self.logger.info("SystemAudioRecorder: first tap buffer delivered")
         }
-        guard let writer else { return }
         do {
-            try writer.append(pcm)
+            // `writer` is nil in metering mode; `framesWritten` still advances, because the
+            // gap arithmetic in `padSilenceToNow` is what decides whether the level bar is
+            // told to read silent. Leaving it pinned at 0 made every single buffer look like
+            // a gap, so an `onLevel?(0)` raced the real RMS on the way to the main actor and
+            // the meter could latch at zero while audio was audibly playing.
+            try writer?.append(pcm)
             framesWritten += Int64(pcm.frameLength)
         } catch {
             Self.logger.error("SystemAudioRecorder: writer.append failed: \(String(describing: error), privacy: .public)")
@@ -197,22 +201,25 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
         // Below ~20ms it's IOProc jitter, not a gap worth representing.
         guard missing > Int64(format.sampleRate / 50) else { return }
         onLevel?(0)  // the level bar should read silent, not freeze at its last value
-        // Metering-only mode has no timeline to keep aligned; the `onLevel?(0)` above is
-        // the whole point of getting here, so stop before reconstructing silence.
-        guard let writer else { return }
         while missing > 0 {
             let frames = AVAudioFrameCount(min(missing, Int64(format.sampleRate)))  // ≤1s per piece
-            guard let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
-            silence.frameLength = frames
-            // AVAudioPCMBuffer does not promise zeroed memory.
-            for buffer in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) {
-                if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
-            }
-            do {
-                try writer.append(silence)
-            } catch {
-                Self.logger.error("SystemAudioRecorder: silence pad failed: \(String(describing: error), privacy: .public)")
-                return
+            // Metering mode (nil writer) has no track to keep aligned, so it skips the
+            // buffer entirely — but still advances the counter below, so the next callback
+            // measures the gap from here rather than re-reporting the whole recording as
+            // one. Reporting silence is the only reason metering gets this far.
+            if let writer {
+                guard let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
+                silence.frameLength = frames
+                // AVAudioPCMBuffer does not promise zeroed memory.
+                for buffer in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) {
+                    if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+                }
+                do {
+                    try writer.append(silence)
+                } catch {
+                    Self.logger.error("SystemAudioRecorder: silence pad failed: \(String(describing: error), privacy: .public)")
+                    return
+                }
             }
             framesWritten += Int64(frames)
             missing -= Int64(frames)

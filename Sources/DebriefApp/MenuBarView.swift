@@ -9,11 +9,6 @@ struct MenuBarView: View {
     /// this frame — including Quit — used to be pushed off-screen with no way to reach it.
     private static let maxScrollHeight: CGFloat = 420
 
-    /// Set once `startMonitoring` has actually returned, so a denied mic reads as a denied
-    /// mic instead of as silence. Not derived from `isMonitoring` directly: that is false
-    /// for the moment before the streams open, which would flash the warning on every open.
-    @State private var monitorUnavailable = false
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Recording state and finalize jobs are stacked, not switched between: starting
@@ -63,24 +58,27 @@ struct MenuBarView: View {
         }
         .padding(12)
         .frame(width: 280)
+        // One task owns the meters for exactly as long as the popover is on screen: it
+        // re-arms them each tick and releases the devices when SwiftUI cancels it, which
+        // ties the mic and the system tap to "something is visibly showing them" rather
+        // than to `onDisappear` firing on a MenuBarExtra window.
+        //
+        // Deliberately a loop rather than `.task(id: recordingPhase)`. An id change cancels
+        // the old task and starts the new one without ordering them, so the outgoing task's
+        // release could land after the incoming one's start and leave the meters dead with
+        // the devices shut — the bug this loop exists to fix, reintroduced by its own fix.
         .task {
-            await env.coordinator.startMonitoring()
-            // A live recording already owns the mic and the tap, so `startMonitoring`
-            // declining is the correct outcome there and must not be reported as a
-            // permissions problem — the meters are being fed by the session instead.
-            if case .recording = env.coordinator.recordingPhase {
-                monitorUnavailable = false
-            } else {
-                monitorUnavailable = !env.coordinator.isMonitoring
+            while !Task.isCancelled {
+                // Idempotent, and a no-op while a recording owns the devices. Re-calling it
+                // is what brings the meters back after a recording is stopped from inside
+                // this same popover: `startRecording` released the monitor, and nothing else
+                // would ever hand it back while the popover stayed open.
+                await env.coordinator.startMonitoring()
+                // ponytail: a 1s poll, not a subscription. The coordinator would have to
+                // know a popover exists to push this; if a second surface ever wants live
+                // meters, give the coordinator a subscriber count instead.
+                try? await Task.sleep(for: .seconds(1))
             }
-            // The release point. `.task` is cancelled when the popover is torn down, so
-            // suspending here and stopping afterwards ties the mic and the system tap to
-            // "something is on screen showing them" — structurally, rather than trusting
-            // `onDisappear` to fire on a MenuBarExtra window. The hour is a backstop, not
-            // a schedule: a popover left open that long has stopped being something
-            // anyone is looking at, and holding the input device open for it is exactly
-            // the behaviour the always-on option was rejected for.
-            try? await Task.sleep(for: .seconds(3600))
             await env.coordinator.stopMonitoring()
         }
         // Deliberately does NOT arm AppDelegate.openMainWindow: MenuBarLabel is the only
@@ -109,9 +107,11 @@ struct MenuBarView: View {
         }
         LevelRow(label: "You", level: env.coordinator.micLevel)
         LevelRow(label: "Them", level: env.coordinator.systemLevel)
-        if monitorUnavailable {
-            Label("Levels unavailable — check Microphone and system-audio permissions.",
-                  systemImage: "exclamationmark.triangle.fill")
+        // Named per stream by the coordinator, and only once a start has actually been
+        // attempted — so a dead "Them" beside a working "You" says which half is broken,
+        // and nothing flashes during the moment before the streams open.
+        if let failure = env.coordinator.monitorFailure {
+            Label(failure, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.yellow).font(.caption).lineLimit(3)
         }
     }

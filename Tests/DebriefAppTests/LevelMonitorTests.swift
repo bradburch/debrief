@@ -151,27 +151,100 @@ final class LevelMonitorTests: XCTestCase {
         }
     }
 
-    /// Monitoring is a diagnostic. A refused mic must leave the meters dark, never produce
-    /// the `.failed` state a real start does — opening the popover would otherwise report a
-    /// recording failure for a recording nobody asked for.
-    func testMonitorStartFailureDoesNotFailTheRecordingPhase() async throws {
+    /// Builds a coordinator whose two streams start (or refuse) independently.
+    private func makeCoordinator(root: URL,
+                                 mic: @escaping (WavChunkWriter?) -> StreamRecorder,
+                                 sys: @escaping (WavChunkWriter?) -> StreamRecorder)
+        throws -> RecordingCoordinator {
         let db = try AppDatabase.inMemory()
         let promptDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let prompts = PromptStore(directory: promptDir)
         try prompts.ensureDefaults()
-        let coordinator = RecordingCoordinator(
+        return RecordingCoordinator(
             db: db,
             coaching: CoachingService(db: db, prompts: prompts, llm: OKStubLLM()),
             transcriber: FakeTranscriber(textForChunk: "final"),
-            makeMicRecorder: { _ in FailingStartRecorder() },
-            makeSystemRecorder: { _ in FailingStartRecorder() },
-            recordingsRoot: try makeRoot(),
+            makeMicRecorder: mic,
+            makeSystemRecorder: sys,
+            recordingsRoot: root,
             chunkDuration: 1.0)
+    }
+
+    /// Monitoring is a diagnostic. A refused mic must leave the meters dark, never produce
+    /// the `.failed` state a real start does — opening the popover would otherwise report a
+    /// recording failure for a recording nobody asked for.
+    ///
+    /// It must also **drop the claim**: `isMonitoring` is what the popover asks in order to
+    /// explain itself, so a monitor left holding two dead streams reports a working meter
+    /// and suppresses the message that says otherwise.
+    func testMonitorStartFailureDropsTheClaimAndExplainsItself() async throws {
+        let coordinator = try makeCoordinator(root: try makeRoot(),
+                                              mic: { _ in FailingStartRecorder() },
+                                              sys: { _ in FailingStartRecorder() })
 
         await coordinator.startMonitoring()
 
         XCTAssertEqual(coordinator.recordingPhase, .idle)
         XCTAssertEqual(coordinator.micLevel, 0)
+        XCTAssertFalse(coordinator.isMonitoring,
+                       "a monitor of two dead streams still reports as monitoring")
+        XCTAssertEqual(coordinator.monitorFailure,
+                       "Levels unavailable — check Microphone and system-audio permissions.")
+    }
+
+    /// A refused microphone must not blind the system-audio meter as well. They are separate
+    /// permissions, and "Them" is the half worth protecting: a tap that runs and delivers
+    /// digital silence is the capture failure this surface exists to make visible.
+    func testRefusedMicStillOpensTheSystemMeter() async throws {
+        let registry = RecorderRegistry()
+        let coordinator = try makeCoordinator(root: try makeRoot(),
+                                              mic: { _ in FailingStartRecorder() },
+                                              sys: { registry.make(writer: $0) })
+
+        await coordinator.startMonitoring()
+
+        XCTAssertTrue(coordinator.isMonitoring, "the system meter still opened")
+        XCTAssertEqual(registry.all.count, 1)
+        XCTAssertEqual(registry.all[0].starts, 1, "the system stream was never started")
+        XCTAssertEqual(coordinator.monitorFailure, "Mic level unavailable — check Microphone permission.")
+
+        registry.all[0].onLevel?(0.6)
+        try await waitUntil("the system meter is live despite the refused mic") {
+            coordinator.systemLevel == 0.6
+        }
+    }
+
+    /// The converse, and the one that matters most: a working mic beside a refused tap must
+    /// say so, rather than leaving a flat "Them" that reads exactly like a silent call.
+    func testRefusedSystemTapIsNamedSeparately() async throws {
+        let registry = RecorderRegistry()
+        let coordinator = try makeCoordinator(root: try makeRoot(),
+                                              mic: { registry.make(writer: $0) },
+                                              sys: { _ in FailingStartRecorder() })
+
+        await coordinator.startMonitoring()
+
+        XCTAssertTrue(coordinator.isMonitoring)
+        XCTAssertEqual(coordinator.monitorFailure,
+                       "System-audio level unavailable — check audio-capture permission.")
+    }
+
+    /// The popover keeps calling `startMonitoring` while it is open, which is what re-arms
+    /// the meters after a recording started from inside it. While the recording still owns
+    /// the devices that call must stay a no-op.
+    func testMonitoringStaysOffWhileARecordingOwnsTheDevices() async throws {
+        let registry = RecorderRegistry()
+        let coordinator = try makeCoordinator(root: try makeRoot(), registry: registry)
+
+        await coordinator.startRecording()
+        let duringRecording = registry.all.count
+
+        await coordinator.startMonitoring()
+        await coordinator.startMonitoring()
+
+        XCTAssertFalse(coordinator.isMonitoring)
+        XCTAssertEqual(registry.all.count, duringRecording,
+                       "the popover's poll opened streams alongside a live recording")
     }
 
     /// Reopening the popover repeatedly must not stack streams: each open would otherwise
