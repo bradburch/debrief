@@ -190,7 +190,21 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
       Item 16's RMS script is the check.
     - Confirm no session directory appears under `recordings/` from monitoring alone, and that
       the next launch offers no recovery prompt for a call that never happened.
-    - Deny Microphone access in System Settings, relaunch, and open the popover: the meters
-      must sit dark under "Levels unavailable — check Microphone and system-audio
-      permissions", and `recordingPhase` must stay idle — opening the popover must never
-      report a *recording* failure.
+    - **Stop a recording from inside the popover, without closing it.** The meters must come
+      back to life within a second or so. They are fed by the session while recording and by
+      the monitor while idle, and nothing but the popover's own tick hands them back — this
+      is the case where they used to go dark until the popover was closed and reopened.
+    - Deny **Microphone only** in System Settings, relaunch, and open the popover. The
+      message must name just that half — "Mic level unavailable — check Microphone
+      permission" — and **"Them" must still move** when audio plays: the two streams are
+      separate permissions, and a refused mic must not blind the system meter. Deny both to
+      see the combined message. In every case `recordingPhase` must stay idle — opening the
+      popover must never report a *recording* failure.
+    - With a permission still denied, leave the popover open for a minute. There must be no
+      repeated permission prompts or device churn: one attempt is made per popover open.
+      Grant the permission, close the popover and reopen it — the meter must now work, and
+      the message must be gone.
+    - Play audio, then stop it abruptly, and watch "Them" with the popover still open. It
+      must fall back to zero within about a second rather than staying stuck at its last
+      reading — the tap stops delivering callbacks entirely when the output goes quiet, so a
+      latched bar claims audio that is not playing.

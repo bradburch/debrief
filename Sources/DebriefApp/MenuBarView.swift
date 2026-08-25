@@ -74,6 +74,10 @@ struct MenuBarView: View {
                 // this same popover: `startRecording` released the monitor, and nothing else
                 // would ever hand it back while the popover stayed open.
                 await env.coordinator.startMonitoring()
+                // A tap delivers nothing while the output device is idle, so the "Them" bar
+                // would otherwise latch at its last reading when the far side stops talking
+                // and go on claiming audio that isn't playing.
+                env.coordinator.expireStaleMonitorLevels()
                 // ponytail: a 1s poll, not a subscription. The coordinator would have to
                 // know a popover exists to push this; if a second surface ever wants live
                 // meters, give the coordinator a subscriber count instead.

@@ -123,8 +123,19 @@ public final class RecordingCoordinator: ObservableObject {
     /// for a recording: a level callback (or a `start()` that finished late) from a monitor
     /// nobody holds any more must not drive the meter or leave a device open.
     private var monitorGeneration = 0
+    /// Set when an attempt opened nothing, and cleared only by `stopMonitoring`. The popover
+    /// re-arms on a 1s tick (so the meters come back after a recording it yielded to ends),
+    /// and without this that tick becomes an unbounded retry: a fresh `MicRecorder` and
+    /// `SystemAudioRecorder` constructed and a real device open attempted every second, for
+    /// as long as the popover stays open, on precisely the machine that is already
+    /// misconfigured. One attempt per open — close and reopen the popover to re-check after
+    /// changing a permission, which is what the failure message tells you to do.
+    private var monitorStartFailed = false
     @Published private var monitorMicLevel: Float = 0
     @Published private var monitorSystemLevel: Float = 0
+    /// When each meter last heard from its stream, for `expireStaleMonitorLevels`.
+    private var monitorMicAt: Date?
+    private var monitorSystemAt: Date?
 
     /// True while the writer-less meters are open. Lets the UI distinguish "0 because the
     /// line is silent" from "0 because nothing is listening" — the difference between a
@@ -277,7 +288,13 @@ public final class RecordingCoordinator: ObservableObject {
         // rule `startRecording` follows for `recordingPhase`, and safe for the same reason
         // (this class is `@MainActor`). Two popover opens in the same frame would otherwise
         // both get past the guard and leave one pair of recorders orphaned and capturing.
-        guard live == nil, monitor == nil else { return }
+        guard live == nil, monitor == nil, !monitorStartFailed else { return }
+        // Load-bearing, and NOT implied by the `live == nil` guard above: between
+        // `startRecording` claiming the phase and assigning `live`, it awaits the monitor's
+        // release and then the real recorders' starts (the mic's awaits a TCC prompt). In
+        // that window the phase is `.recording` while `live` is still nil, and the popover's
+        // 1s tick can land right in it and open a monitor pair alongside the recorders now
+        // opening the very same devices.
         if case .recording = recordingPhase { return }
         monitorGeneration &+= 1
         let generation = monitorGeneration
@@ -308,11 +325,12 @@ public final class RecordingCoordinator: ObservableObject {
         }
         monitorFailure = Self.monitorFailureMessage(micStarted: micStarted, sysStarted: sysStarted)
         guard !micStarted, !sysStarted else { return }
-        // Nothing opened. Drop the claim rather than holding a monitor of two dead streams:
-        // `isMonitoring` is what the popover asks in order to explain itself, so leaving it
-        // true reports a working meter and suppresses the very message that says otherwise.
+        // Nothing opened. Drop the claim rather than holding a monitor of two dead streams,
+        // so `isMonitoring` stays honest for anything that asks it, and mark the attempt
+        // failed so the popover's tick does not retry the device open every second.
         monitor = nil
         monitorGeneration &+= 1
+        monitorStartFailed = true
         try? await mic.stop()
         try? await sys.stop()
     }
@@ -347,6 +365,13 @@ public final class RecordingCoordinator: ObservableObject {
 
     /// Release the metering streams. Safe to call when nothing is monitoring.
     public func stopMonitoring() async {
+        // Above the guard, deliberately. The "nothing opened" path drops the claim while
+        // leaving the message set, so a `stopMonitoring` that early-returns here would strand
+        // it — and `startRecording` calls this, so the popover would sit there showing
+        // "Levels unavailable" underneath a live recording timer and two moving meters, for
+        // the whole interview, with nothing able to clear it.
+        monitorFailure = nil
+        monitorStartFailed = false
         guard let monitor else { return }
         // Cleared and invalidated before the awaits, so a `startMonitoring` racing this sees
         // a free slot and a stale generation rather than a half-torn-down pair.
@@ -354,9 +379,29 @@ public final class RecordingCoordinator: ObservableObject {
         monitorGeneration &+= 1
         monitorMicLevel = 0
         monitorSystemLevel = 0
-        monitorFailure = nil
+        monitorMicAt = nil
+        monitorSystemAt = nil
         try? await monitor.mic.stop()
         try? await monitor.sys.stop()
+    }
+
+    /// Zero a monitor meter that has heard nothing recently.
+    ///
+    /// A CoreAudio process tap delivers **nothing at all** while the output device is idle,
+    /// so when the far side stops talking the "Them" bar simply stops being updated and
+    /// latches at its last reading — a meter reporting audio that is not playing, which is
+    /// worse than no meter for a surface whose entire job is to answer "is Debrief hearing
+    /// anything?". `SystemAudioRecorder.padSilenceToNow` cannot cover this: it is reachable
+    /// only from a callback, and the failure is the absence of callbacks. The mic streams
+    /// continuously and so effectively never expires; the tap is the reason this exists.
+    public func expireStaleMonitorLevels(now: Date = Date(), after seconds: TimeInterval = 0.75) {
+        guard monitor != nil else { return }
+        if monitorMicLevel != 0, let at = monitorMicAt, now.timeIntervalSince(at) > seconds {
+            monitorMicLevel = 0
+        }
+        if monitorSystemLevel != 0, let at = monitorSystemAt, now.timeIntervalSince(at) > seconds {
+            monitorSystemLevel = 0
+        }
     }
 
     private func recordMonitorLevel(_ level: Float, stream: LevelStream, generation: Int) {
@@ -365,8 +410,8 @@ public final class RecordingCoordinator: ObservableObject {
         // not leave a stale reading frozen on the meter.
         guard monitorGeneration == generation, monitor != nil else { return }
         switch stream {
-        case .mic: monitorMicLevel = level
-        case .system: monitorSystemLevel = level
+        case .mic: monitorMicLevel = level; monitorMicAt = Date()
+        case .system: monitorSystemLevel = level; monitorSystemAt = Date()
         }
     }
 

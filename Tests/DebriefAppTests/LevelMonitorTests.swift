@@ -36,6 +36,16 @@ final class RecorderRegistry: @unchecked Sendable {
     }
 }
 
+/// Parks inside `start()`, so a test can hold `startRecording` in the window where it has
+/// already claimed `recordingPhase` but has not yet assigned `live`.
+final class GatedStartRecorder: StreamRecorder, @unchecked Sendable {
+    var onLevel: (@Sendable (Float) -> Void)?
+    let gate: Gate
+    init(gate: Gate) { self.gate = gate }
+    func start() async throws { await gate.wait("start") }
+    func stop() async throws {}
+}
+
 @MainActor
 final class LevelMonitorTests: XCTestCase {
     private func makeRoot() throws -> URL {
@@ -229,6 +239,46 @@ final class LevelMonitorTests: XCTestCase {
                        "System-audio level unavailable — check audio-capture permission.")
     }
 
+    /// The window the `.recording` guard actually exists for, and the one the popover's new
+    /// 1s tick made reachable: between `startRecording` claiming the phase and assigning
+    /// `live`, it awaits the monitor's release and then the recorders' starts (the mic's
+    /// awaits a TCC prompt). Throughout that stretch `recordingPhase` is `.recording` while
+    /// `live` is still nil, so the `live == nil` guard alone lets a tick straight through to
+    /// open a monitor pair on the devices the real recorders are opening right now.
+    ///
+    /// Deleting the `.recording` check must fail this test; the `live`-based test below
+    /// passes without it, which is what made the guard look redundant.
+    func testMonitoringStaysOffWhileARecordingIsStillStarting() async throws {
+        let gate = Gate()
+        await gate.hold("start")
+        let registry = RecorderRegistry()
+        // Only the *recording* mic is gated (it gets a real writer); the monitor's streams
+        // (nil writer) open instantly. So if the guard is removed the monitor opens cleanly
+        // and the assertion below fails on its own terms, rather than the test deadlocking
+        // on a gate the monitor was never meant to reach.
+        let coordinator = try makeCoordinator(
+            root: try makeRoot(),
+            mic: { writer in
+                writer == nil ? registry.make(writer: writer) : GatedStartRecorder(gate: gate)
+            },
+            sys: { registry.make(writer: $0) })
+
+        let recording = Task { await coordinator.startRecording() }
+        try await waitUntil("startRecording claimed the phase") {
+            if case .recording = coordinator.recordingPhase { return true }
+            return false
+        }
+        XCTAssertFalse(coordinator.isMonitoring)
+
+        // The popover's tick, landing mid-start.
+        await coordinator.startMonitoring()
+
+        XCTAssertFalse(coordinator.isMonitoring,
+                       "a tick opened a monitor while the recording was still starting")
+        await gate.open()
+        await recording.value
+    }
+
     /// The popover keeps calling `startMonitoring` while it is open, which is what re-arms
     /// the meters after a recording started from inside it. While the recording still owns
     /// the devices that call must stay a no-op.
@@ -245,6 +295,72 @@ final class LevelMonitorTests: XCTestCase {
         XCTAssertFalse(coordinator.isMonitoring)
         XCTAssertEqual(registry.all.count, duringRecording,
                        "the popover's poll opened streams alongside a live recording")
+    }
+
+    /// A failed attempt must not leave its message stranded on screen. `startRecording`
+    /// calls `stopMonitoring`, and the "nothing opened" path has already dropped the claim —
+    /// so an early return there leaves the popover showing "Levels unavailable" underneath a
+    /// live recording timer and two working meters, for the whole interview.
+    func testFailedMonitorMessageIsClearedWhenARecordingTakesOver() async throws {
+        let registry = RecorderRegistry()
+        var monitorAttempted = false
+        let coordinator = try makeCoordinator(
+            root: try makeRoot(),
+            // Refuses for the monitor (nil writer), succeeds for the real recording.
+            mic: { writer in
+                if writer == nil { monitorAttempted = true; return FailingStartRecorder() }
+                return registry.make(writer: writer)
+            },
+            sys: { writer in writer == nil ? FailingStartRecorder() : registry.make(writer: writer) })
+
+        await coordinator.startMonitoring()
+        XCTAssertTrue(monitorAttempted)
+        XCTAssertNotNil(coordinator.monitorFailure)
+
+        await coordinator.startRecording()
+
+        XCTAssertNil(coordinator.monitorFailure,
+                     "the popover would show a permissions warning during a working recording")
+    }
+
+    /// One attempt per popover open. The tick that re-arms the meters must not turn into an
+    /// unbounded retry, constructing recorders and attempting a real device open every
+    /// second on the machine that is already misconfigured.
+    func testAFailedAttemptIsNotRetriedOnEveryTick() async throws {
+        let attempts = StopSpy()
+        let coordinator = try makeCoordinator(
+            root: try makeRoot(),
+            mic: { _ in attempts.record(); return FailingStartRecorder() },
+            sys: { _ in FailingStartRecorder() })
+
+        for _ in 0..<5 { await coordinator.startMonitoring() }
+
+        XCTAssertEqual(attempts.stops, 1, "the popover's tick retried the device open every second")
+        XCTAssertNotNil(coordinator.monitorFailure, "the message must survive the ticks that follow")
+
+        // Closing the popover retires the attempt, so reopening re-checks — which is how a
+        // permission granted in System Settings takes effect.
+        await coordinator.stopMonitoring()
+        XCTAssertNil(coordinator.monitorFailure)
+        await coordinator.startMonitoring()
+        XCTAssertEqual(attempts.stops, 2, "reopening the popover must try again")
+    }
+
+    /// A process tap delivers nothing while the output is idle, so without expiry the "Them"
+    /// bar latches at its last reading and reports audio that stopped playing.
+    func testStaleMeterExpiresInsteadOfLatching() async throws {
+        let registry = RecorderRegistry()
+        let coordinator = try makeCoordinator(root: try makeRoot(), registry: registry)
+        await coordinator.startMonitoring()
+
+        registry.all[1].onLevel?(0.8)
+        try await waitUntil("the system meter picked up the level") { coordinator.systemLevel == 0.8 }
+
+        coordinator.expireStaleMonitorLevels(now: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(coordinator.systemLevel, 0.8, "a fresh reading must not be expired")
+
+        coordinator.expireStaleMonitorLevels(now: Date().addingTimeInterval(5))
+        XCTAssertEqual(coordinator.systemLevel, 0, "the meter latched after the tap went quiet")
     }
 
     /// Reopening the popover repeatedly must not stack streams: each open would otherwise

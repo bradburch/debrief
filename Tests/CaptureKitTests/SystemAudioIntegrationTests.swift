@@ -27,13 +27,20 @@ final class SystemAudioIntegrationTests: XCTestCase {
         var highest: Float { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    /// Keeps the most recent level, so a test can assert the meter *came back down* rather
-    /// than only that it once went up.
+    /// Counts zero vs non-zero readings. The ratio is the observable difference the frame
+    /// counter makes: with `framesWritten` pinned at 0 every buffer looks like a wall-clock
+    /// gap, so `padSilenceToNow` emits a 0 immediately before each real reading and the two
+    /// counts come out roughly equal.
     private final class LevelTrace: @unchecked Sendable {
         private let lock = NSLock()
-        private var value: Float = 0
-        func record(_ level: Float) { lock.lock(); value = level; lock.unlock() }
-        var last: Float { lock.lock(); defer { lock.unlock() }; return value }
+        private var zero = 0
+        private var signal = 0
+        func record(_ level: Float) {
+            lock.lock(); defer { lock.unlock() }
+            if level == 0 { zero += 1 } else { signal += 1 }
+        }
+        var zeros: Int { lock.lock(); defer { lock.unlock() }; return zero }
+        var signals: Int { lock.lock(); defer { lock.unlock() }; return signal }
     }
 
     func testCapturesRealOutputAudioAndKeepsWallClockDuration() async throws {
@@ -95,16 +102,20 @@ final class SystemAudioIntegrationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 1_500_000_000)  // leading idle, as above
         try Self.run("/usr/bin/say", ["-v", "Samantha", "one two three four five six seven eight"])
         let duringSpeech = levels.highest
-        try await Task.sleep(nanoseconds: 1_500_000_000)  // trailing idle
+        let zeros = trace.zeros, signals = trace.signals
         try await recorder.stop()
 
         XCTAssertGreaterThan(duringSpeech, 0.0001,
                              "metering mode reported no signal while audio was playing")
-        XCTAssertEqual(trace.last, 0, accuracy: 0.0001,
-                       "the meter never returned to silence after the audio stopped")
-        // The whole point of a nil writer: nothing is produced to write anywhere.
-        XCTAssertEqual(recorder.framesWritten > 0, true,
-                       "the frame counter must still advance, or every buffer reads as a gap")
+        XCTAssertGreaterThan(signals, 20, "the tap delivered almost nothing to measure")
+        // The load-bearing one. Sampled before `stop()`, because stop() pads unconditionally
+        // and would add a zero no matter what. Only the leading idle gap should report
+        // silence; a zero racing every single reading is the bug.
+        XCTAssertLessThan(zeros, signals / 5,
+                          "silence was reported \(zeros) times against \(signals) real readings — "
+                          + "padSilenceToNow is firing on every buffer, not just on real gaps")
+        XCTAssertGreaterThan(recorder.framesWritten, 0,
+                             "the frame counter must still advance, or every buffer reads as a gap")
     }
 
     /// Total duration and overall RMS of 16 kHz mono Int16 chunks.
