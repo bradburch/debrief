@@ -133,8 +133,10 @@ public final class RecordingCoordinator: ObservableObject {
     private var monitorStartFailed = false
     @Published private var monitorMicLevel: Float = 0
     @Published private var monitorSystemLevel: Float = 0
-    /// When each meter last heard from its stream, for `expireStaleMonitorLevels`.
-    private var monitorMicAt: Date?
+    /// When the system meter last heard from its tap, for `expireStaleMonitorLevels`. Only
+    /// the system stream needs one: the mic is an AVAudioEngine tap that streams
+    /// continuously, so a mic reading is never stale for want of callbacks — expiring it
+    /// would be a chance to flicker "You" to zero on a slow input device, for no gain.
     private var monitorSystemAt: Date?
 
     /// True while the writer-less meters are open. Lets the UI distinguish "0 because the
@@ -379,29 +381,28 @@ public final class RecordingCoordinator: ObservableObject {
         monitorGeneration &+= 1
         monitorMicLevel = 0
         monitorSystemLevel = 0
-        monitorMicAt = nil
         monitorSystemAt = nil
         try? await monitor.mic.stop()
         try? await monitor.sys.stop()
     }
 
-    /// Zero a monitor meter that has heard nothing recently.
+    /// Zero the system meter when its tap has gone quiet.
     ///
     /// A CoreAudio process tap delivers **nothing at all** while the output device is idle,
     /// so when the far side stops talking the "Them" bar simply stops being updated and
     /// latches at its last reading — a meter reporting audio that is not playing, which is
     /// worse than no meter for a surface whose entire job is to answer "is Debrief hearing
     /// anything?". `SystemAudioRecorder.padSilenceToNow` cannot cover this: it is reachable
-    /// only from a callback, and the failure is the absence of callbacks. The mic streams
-    /// continuously and so effectively never expires; the tap is the reason this exists.
+    /// only from a callback, and the failure is the absence of callbacks.
+    ///
+    /// Known gap, deliberately not addressed here: while *recording* the meters read from
+    /// `live`, which this does not touch, so a system stream that goes quiet mid-interview
+    /// still latches. That is pre-existing behaviour on the recording path, and
+    /// `checkStreamHealth` already surfaces it as a warning after 60s.
     public func expireStaleMonitorLevels(now: Date = Date(), after seconds: TimeInterval = 0.75) {
-        guard monitor != nil else { return }
-        if monitorMicLevel != 0, let at = monitorMicAt, now.timeIntervalSince(at) > seconds {
-            monitorMicLevel = 0
-        }
-        if monitorSystemLevel != 0, let at = monitorSystemAt, now.timeIntervalSince(at) > seconds {
-            monitorSystemLevel = 0
-        }
+        guard monitor != nil, monitorSystemLevel != 0, let at = monitorSystemAt,
+              now.timeIntervalSince(at) > seconds else { return }
+        monitorSystemLevel = 0
     }
 
     private func recordMonitorLevel(_ level: Float, stream: LevelStream, generation: Int) {
@@ -410,7 +411,7 @@ public final class RecordingCoordinator: ObservableObject {
         // not leave a stale reading frozen on the meter.
         guard monitorGeneration == generation, monitor != nil else { return }
         switch stream {
-        case .mic: monitorMicLevel = level; monitorMicAt = Date()
+        case .mic: monitorMicLevel = level
         case .system: monitorSystemLevel = level; monitorSystemAt = Date()
         }
     }

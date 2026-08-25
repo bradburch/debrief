@@ -205,6 +205,7 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
       Grant the permission, close the popover and reopen it — the meter must now work, and
       the message must be gone.
     - Play audio, then stop it abruptly, and watch "Them" with the popover still open. It
-      must fall back to zero within about a second rather than staying stuck at its last
+      must fall back to zero within a couple of seconds (the 0.75s threshold is sampled on a
+      1s tick, so ~1.75s is the honest worst case) rather than staying stuck at its last
       reading — the tap stops delivering callbacks entirely when the output goes quiet, so a
       latched bar claims audio that is not playing.
