@@ -27,7 +27,7 @@ import os
 public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sendable {
     public var onLevel: (@Sendable (Float) -> Void)?
 
-    private let writer: WavChunkWriter
+    private let writer: WavChunkWriter?
     private let queue = DispatchQueue(label: "debrief.sys-writer")
     private static let logger = Logger(subsystem: "com.debrief.app", category: "capture")
 
@@ -46,7 +46,12 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
     var captureStart: CFAbsoluteTime = 0
     var framesWritten: Int64 = 0
 
-    public init(writer: WavChunkWriter) { self.writer = writer }
+    /// `writer` is optional: with `nil` the tap is still created and `onLevel` still
+    /// fires, but nothing is written. That is the level-monitor mode the menu-bar popover
+    /// uses to show output level before you commit to a recording — deliberately a nil
+    /// writer rather than one aimed at a scratch directory, because any session directory
+    /// under the recordings root would be read back as a phantom crash recovery.
+    public init(writer: WavChunkWriter?) { self.writer = writer }
 
     public func start() async throws {
         framesWritten = 0
@@ -126,7 +131,8 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
                 // Trailing pad so the system track spans the whole recording, matching
                 // the continuously-streaming mic track.
                 if let tapFormat = self.tapFormat { self.padSilenceToNow(format: tapFormat) }
-                do { try self.writer.finish(); cont.resume() } catch { cont.resume(throwing: error) }
+                guard let writer = self.writer else { cont.resume(); return }
+                do { try writer.finish(); cont.resume() } catch { cont.resume(throwing: error) }
             }
         }
     }
@@ -157,7 +163,12 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
             Self.logger.info("SystemAudioRecorder: first tap buffer delivered")
         }
         do {
-            try writer.append(pcm)
+            // `writer` is nil in metering mode; `framesWritten` still advances, because the
+            // gap arithmetic in `padSilenceToNow` is what decides whether the level bar is
+            // told to read silent. Leaving it pinned at 0 made every single buffer look like
+            // a gap, so an `onLevel?(0)` raced the real RMS on the way to the main actor and
+            // the meter could latch at zero while audio was audibly playing.
+            try writer?.append(pcm)
             framesWritten += Int64(pcm.frameLength)
         } catch {
             Self.logger.error("SystemAudioRecorder: writer.append failed: \(String(describing: error), privacy: .public)")
@@ -192,17 +203,23 @@ public final class SystemAudioRecorder: NSObject, StreamRecorder, @unchecked Sen
         onLevel?(0)  // the level bar should read silent, not freeze at its last value
         while missing > 0 {
             let frames = AVAudioFrameCount(min(missing, Int64(format.sampleRate)))  // ≤1s per piece
-            guard let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
-            silence.frameLength = frames
-            // AVAudioPCMBuffer does not promise zeroed memory.
-            for buffer in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) {
-                if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
-            }
-            do {
-                try writer.append(silence)
-            } catch {
-                Self.logger.error("SystemAudioRecorder: silence pad failed: \(String(describing: error), privacy: .public)")
-                return
+            // Metering mode (nil writer) has no track to keep aligned, so it skips the
+            // buffer entirely — but still advances the counter below, so the next callback
+            // measures the gap from here rather than re-reporting the whole recording as
+            // one. Reporting silence is the only reason metering gets this far.
+            if let writer {
+                guard let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
+                silence.frameLength = frames
+                // AVAudioPCMBuffer does not promise zeroed memory.
+                for buffer in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) {
+                    if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+                }
+                do {
+                    try writer.append(silence)
+                } catch {
+                    Self.logger.error("SystemAudioRecorder: silence pad failed: \(String(describing: error), privacy: .public)")
+                    return
+                }
             }
             framesWritten += Int64(frames)
             missing -= Int64(frames)

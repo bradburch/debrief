@@ -27,6 +27,22 @@ final class SystemAudioIntegrationTests: XCTestCase {
         var highest: Float { lock.lock(); defer { lock.unlock() }; return value }
     }
 
+    /// Counts zero vs non-zero readings. The ratio is the observable difference the frame
+    /// counter makes: with `framesWritten` pinned at 0 every buffer looks like a wall-clock
+    /// gap, so `padSilenceToNow` emits a 0 immediately before each real reading and the two
+    /// counts come out roughly equal.
+    private final class LevelTrace: @unchecked Sendable {
+        private let lock = NSLock()
+        private var zero = 0
+        private var signal = 0
+        func record(_ level: Float) {
+            lock.lock(); defer { lock.unlock() }
+            if level == 0 { zero += 1 } else { signal += 1 }
+        }
+        var zeros: Int { lock.lock(); defer { lock.unlock() }; return zero }
+        var signals: Int { lock.lock(); defer { lock.unlock() }; return signal }
+    }
+
     func testCapturesRealOutputAudioAndKeepsWallClockDuration() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["DEBRIEF_RUN_INTEGRATION"] == "1")
 
@@ -62,6 +78,44 @@ final class SystemAudioIntegrationTests: XCTestCase {
         // 3. The level the "Them" bar reads is nonzero, so capture working can't present
         //    as a dead UI (one of the three outcomes checklist #16 had to distinguish).
         XCTAssertGreaterThan(levels.highest, 0.0001, "onLevel never reported signal")
+    }
+
+    /// Metering mode against a real device: a nil writer must still report real signal on
+    /// `onLevel`, and must still fall back to silence once the audio stops.
+    ///
+    /// This is the popover's idle "Them" bar, and it is worth a real-device test for the
+    /// same reason the recording path is — the mocked tests operate on synthetic buffers,
+    /// and the failure being guarded against is a meter that reads zero while audio is
+    /// audibly playing. With `framesWritten` pinned at 0 (as it was before the frame
+    /// counter was made to advance without a writer) every buffer looked like a wall-clock
+    /// gap, so `padSilenceToNow` emitted `onLevel?(0)` immediately before each real reading
+    /// and the bar could latch at zero.
+    func testMeteringModeReportsRealSignalWithoutWritingAnything() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["DEBRIEF_RUN_INTEGRATION"] == "1")
+
+        let recorder = SystemAudioRecorder(writer: nil)
+        let levels = LevelBox()
+        let trace = LevelTrace()
+        recorder.onLevel = { levels.record($0); trace.record($0) }
+
+        try await recorder.start()
+        try await Task.sleep(nanoseconds: 1_500_000_000)  // leading idle, as above
+        try Self.run("/usr/bin/say", ["-v", "Samantha", "one two three four five six seven eight"])
+        let duringSpeech = levels.highest
+        let zeros = trace.zeros, signals = trace.signals
+        try await recorder.stop()
+
+        XCTAssertGreaterThan(duringSpeech, 0.0001,
+                             "metering mode reported no signal while audio was playing")
+        XCTAssertGreaterThan(signals, 20, "the tap delivered almost nothing to measure")
+        // The load-bearing one. Sampled before `stop()`, because stop() pads unconditionally
+        // and would add a zero no matter what. Only the leading idle gap should report
+        // silence; a zero racing every single reading is the bug.
+        XCTAssertLessThan(zeros, signals / 5,
+                          "silence was reported \(zeros) times against \(signals) real readings — "
+                          + "padSilenceToNow is firing on every buffer, not just on real gaps")
+        XCTAssertGreaterThan(recorder.framesWritten, 0,
+                             "the frame counter must still advance, or every buffer reads as a gap")
     }
 
     /// Total duration and overall RMS of 16 kHz mono Int16 chunks.

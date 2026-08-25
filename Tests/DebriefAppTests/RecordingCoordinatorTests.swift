@@ -20,11 +20,14 @@ final class RecorderPlan: @unchecked Sendable {
 
 final class FakeRecorder: StreamRecorder, @unchecked Sendable {
     var onLevel: (@Sendable (Float) -> Void)?
-    let writer: WavChunkWriter
+    /// Optional for the same reason the real recorders' is: a nil writer is level-monitor
+    /// mode, which writes nothing. A fake that still wrote would hide the invariant that
+    /// monitoring never puts a byte on disk.
+    let writer: WavChunkWriter?
     let seconds: Double
     let tailSeconds: Double
     let stopGate: Gate?
-    init(writer: WavChunkWriter, seconds: Double, tailSeconds: Double = 0, stopGate: Gate? = nil) {
+    init(writer: WavChunkWriter?, seconds: Double, tailSeconds: Double = 0, stopGate: Gate? = nil) {
         self.writer = writer; self.seconds = seconds; self.tailSeconds = tailSeconds
         self.stopGate = stopGate
     }
@@ -33,13 +36,13 @@ final class FakeRecorder: StreamRecorder, @unchecked Sendable {
     func stop() async throws {
         await stopGate?.wait("stop")
         try write(tailSeconds)
-        try writer.finish()
+        try writer?.finish()
     }
 
     /// Synthesizes `count` seconds of audio as 1s appends so the writer rolls one
     /// chunk per second (a single big append would land in one oversized chunk).
     private func write(_ count: Double) throws {
-        guard count > 0 else { return }
+        guard count > 0, let writer else { return }
         let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
         for _ in 0..<Int(count) {
             let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 16_000)!
@@ -61,11 +64,11 @@ final class StopSpy: @unchecked Sendable {
 /// Starts cleanly, writes nothing, and reports being stopped.
 final class SpyRecorder: StreamRecorder, @unchecked Sendable {
     var onLevel: (@Sendable (Float) -> Void)?
-    let writer: WavChunkWriter
+    let writer: WavChunkWriter?
     let spy: StopSpy
-    init(writer: WavChunkWriter, spy: StopSpy) { self.writer = writer; self.spy = spy }
+    init(writer: WavChunkWriter?, spy: StopSpy) { self.writer = writer; self.spy = spy }
     func start() async throws {}
-    func stop() async throws { spy.record(); try writer.finish() }
+    func stop() async throws { spy.record(); try writer?.finish() }
 }
 
 /// The system tap being refused: `start()` throws after the other stream is already live.
