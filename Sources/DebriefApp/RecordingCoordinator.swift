@@ -407,9 +407,11 @@ public final class RecordingCoordinator: ObservableObject {
     /// when the honest answer is "nothing has arrived for a while". `checkStreamHealth` only
     /// speaks up after 60s, which is a different and much later question.
     ///
-    /// The mic is left alone in both phases: an AVAudioEngine tap streams continuously, so a
-    /// mic reading is never stale for want of callbacks, and expiring it would only be a
-    /// chance to flicker "You" to zero on a slow input device.
+    /// The mic is left alone in both phases — pinned by a test per phase, because an earlier
+    /// version covered only the monitor and a mic expiry added to the recording branch
+    /// shipped green. An AVAudioEngine tap streams continuously, so a mic reading is never
+    /// stale for want of callbacks: a quiet room is a low bar, not a latched one, and
+    /// expiring it would only be a chance to flicker "You" to zero on a slow input device.
     public func expireStaleLevels(now: Date = Date(), after seconds: TimeInterval = 0.75) {
         if let session = live, session.systemLevel != 0,
            now.timeIntervalSince(session.lastSysLevelAt) > seconds {

@@ -523,13 +523,29 @@ final class AppEnvironment: ObservableObject {
         // A process tap delivers nothing while the output device is idle, so a level meter
         // is only ever pushed *up* — nothing arrives to bring it back down, and the bar
         // latches at its last reading claiming audio that stopped. This is the one owner of
-        // that correction, for both the popover and the main window's recording bar, in both
-        // phases: neither view can do it, because the failure is the absence of the very
-        // callbacks that would make a view redraw. It mutates only when a bar actually needs
+        // that correction, for the popover (idle and recording) and the main window's
+        // recording bar (recording only, which is the only phase it draws meters in).
+        // Neither view can do it for itself, because the failure is precisely the absence of
+        // the callbacks that would make a view redraw. It mutates only when a bar actually needs
         // to drop, so an idle app publishes nothing.
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        //
+        // Registered in `.common` rather than left in the default mode `scheduledTimer`
+        // gives it: this replaced a `Task.sleep` loop in the view, which was executor-driven
+        // and so ran regardless of run-loop mode. In the default mode alone the meters would
+        // freeze for the duration of any tracking gesture — dragging the popover's scroll
+        // view, or resizing the main window while the recording bar is up — which is a
+        // frozen bar reappearing by another route.
+        //
+        // ponytail: unconditional 1s wakeup for the life of the process, chosen over
+        // starting and stopping it around monitoring and recording, which would mean four
+        // more lifecycle edges in the class CLAUDE.md flags as the concurrency-critical one.
+        // It publishes nothing unless a bar actually has to drop, and it is far cheaper than
+        // the 3s detect timer beside it, which enumerates every CoreAudio process object.
+        let meter = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.coordinator.expireStaleLevels() }
         }
+        RunLoop.main.add(meter, forMode: .common)
+        meterTimer = meter
     }
 
     /// Polls in every phase: the mic probe excludes our own capture, so detection
