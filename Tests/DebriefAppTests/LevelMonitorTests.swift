@@ -447,9 +447,14 @@ final class LevelMonitorTests: XCTestCase {
                      "expiring the bar was misread as an audio outage")
 
         // And the clock still runs on real audio, so a genuine outage is still reported.
+        // Asserted on the *system* warning specifically: `streamWarning` concatenates the
+        // mic and system checks, so a plain XCTAssertNotNil is a disjunction that the mic
+        // half satisfies on its own — deleting the system check outright left the whole
+        // 264-test suite green, on a branch that is entirely about the system stream.
         coordinator.checkStreamHealth(now: start.addingTimeInterval(90))
-        XCTAssertNotNil(coordinator.streamWarning,
-                        "the 60s stream warning stopped working")
+        XCTAssertEqual(coordinator.streamWarning?.contains("system stream"), true,
+                       "the 60s system-stream warning stopped working: "
+                       + "\(coordinator.streamWarning ?? "nil")")
     }
 
     /// The mic is deliberately left alone in both phases: an AVAudioEngine tap streams
