@@ -209,3 +209,12 @@ Run after any change to CaptureKit or the coordinator. Build: `./scripts/make-ap
       1s tick, so ~1.75s is the honest worst case) rather than staying stuck at its last
       reading — the tap stops delivering callbacks entirely when the output goes quiet, so a
       latched bar claims audio that is not playing.
+    - **The same check while recording, on both surfaces.** Start a recording, play audio,
+      stop it, and watch "Them" in the popover *and* in the main window's recording bar. Both
+      must fall back to zero on the same timing. This is the case that matters most — it is
+      mid-interview that someone glances at "Them" to confirm the other side is still being
+      captured — and neither view can correct itself, because the failure is the absence of
+      the callbacks that would make it redraw.
+    - "You" must NOT drop to zero when you stop talking: the mic streams continuously, so a
+      quiet room is a low bar, not a stale one. A "You" bar that snaps to zero in silence
+      means the expiry was wrongly applied to the mic.

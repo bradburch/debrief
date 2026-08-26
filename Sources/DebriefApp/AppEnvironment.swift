@@ -339,6 +339,7 @@ final class AppEnvironment: ObservableObject {
     private var detector = CallDetector(confirmation: 5, endConfirmation: 10)
     private var detectTimer: Timer?
     private var healthTimer: Timer?
+    private var meterTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
     init(db: AppDatabase, prompts: PromptStore, coaching: CoachingService, coordinator: RecordingCoordinator, alerts: CallAlerting? = nil,
@@ -518,6 +519,16 @@ final class AppEnvironment: ObservableObject {
         }
         healthTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.coordinator.checkStreamHealth(now: Date()) }
+        }
+        // A process tap delivers nothing while the output device is idle, so a level meter
+        // is only ever pushed *up* — nothing arrives to bring it back down, and the bar
+        // latches at its last reading claiming audio that stopped. This is the one owner of
+        // that correction, for both the popover and the main window's recording bar, in both
+        // phases: neither view can do it, because the failure is the absence of the very
+        // callbacks that would make a view redraw. It mutates only when a bar actually needs
+        // to drop, so an idle app publishes nothing.
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.coordinator.expireStaleLevels() }
         }
     }
 

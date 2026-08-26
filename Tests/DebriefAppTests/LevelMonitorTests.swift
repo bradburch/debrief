@@ -356,11 +356,65 @@ final class LevelMonitorTests: XCTestCase {
         registry.all[1].onLevel?(0.8)
         try await waitUntil("the system meter picked up the level") { coordinator.systemLevel == 0.8 }
 
-        coordinator.expireStaleMonitorLevels(now: Date().addingTimeInterval(0.1))
+        coordinator.expireStaleLevels(now: Date().addingTimeInterval(0.1))
         XCTAssertEqual(coordinator.systemLevel, 0.8, "a fresh reading must not be expired")
 
-        coordinator.expireStaleMonitorLevels(now: Date().addingTimeInterval(5))
+        coordinator.expireStaleLevels(now: Date().addingTimeInterval(5))
         XCTAssertEqual(coordinator.systemLevel, 0, "the meter latched after the tap went quiet")
+    }
+
+    /// The same latch, on the recording path — where it matters most. Mid-interview is
+    /// exactly when someone glances at "Them" to check the other side is still being
+    /// captured, and a bar frozen at its last reading answers yes when nothing has arrived
+    /// for a while. `checkStreamHealth` only speaks up after 60s, a much later question.
+    func testRecordingMeterExpiresWhenTheTapGoesQuiet() async throws {
+        let registry = RecorderRegistry()
+        let coordinator = try makeCoordinator(root: try makeRoot(), registry: registry)
+        await coordinator.startRecording()
+
+        // registry.all is [mic, sys] for the recording's own pair.
+        registry.all[1].onLevel?(0.7)
+        try await waitUntil("the recording's system meter picked up the level") {
+            coordinator.systemLevel == 0.7
+        }
+
+        coordinator.expireStaleLevels(now: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(coordinator.systemLevel, 0.7, "a fresh reading must not be expired")
+
+        coordinator.expireStaleLevels(now: Date().addingTimeInterval(5))
+        XCTAssertEqual(coordinator.systemLevel, 0,
+                       "the recording meter latched after the tap went quiet")
+    }
+
+    /// Expiring a displayed level must not disturb `checkStreamHealth`, which answers a
+    /// different question from a different field — a silent bar is not a 60s outage.
+    func testExpiringAMeterDoesNotRaiseAStreamWarning() async throws {
+        let registry = RecorderRegistry()
+        let coordinator = try makeCoordinator(root: try makeRoot(), registry: registry)
+        await coordinator.startRecording()
+
+        registry.all[1].onLevel?(0.7)
+        try await waitUntil("level landed") { coordinator.systemLevel == 0.7 }
+        coordinator.expireStaleLevels(now: Date().addingTimeInterval(5))
+
+        coordinator.checkStreamHealth(now: Date())
+        XCTAssertNil(coordinator.streamWarning,
+                     "expiring the bar was mistaken for an audio outage")
+    }
+
+    /// The mic is deliberately left alone in both phases: an AVAudioEngine tap streams
+    /// continuously, so a mic reading is never stale for want of callbacks, and expiring it
+    /// would only be a chance to flicker "You" to zero on a slow input device.
+    func testMicMeterIsNeverExpired() async throws {
+        let registry = RecorderRegistry()
+        let coordinator = try makeCoordinator(root: try makeRoot(), registry: registry)
+        await coordinator.startMonitoring()
+
+        registry.all[0].onLevel?(0.5)
+        try await waitUntil("mic level landed") { coordinator.micLevel == 0.5 }
+
+        coordinator.expireStaleLevels(now: Date().addingTimeInterval(30))
+        XCTAssertEqual(coordinator.micLevel, 0.5)
     }
 
     /// Reopening the popover repeatedly must not stack streams: each open would otherwise
