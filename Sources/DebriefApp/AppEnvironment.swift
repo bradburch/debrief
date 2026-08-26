@@ -339,6 +339,7 @@ final class AppEnvironment: ObservableObject {
     private var detector = CallDetector(confirmation: 5, endConfirmation: 10)
     private var detectTimer: Timer?
     private var healthTimer: Timer?
+    private var meterTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
     init(db: AppDatabase, prompts: PromptStore, coaching: CoachingService, coordinator: RecordingCoordinator, alerts: CallAlerting? = nil,
@@ -509,16 +510,47 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// All three run in `.common` rather than the default mode `Timer.scheduledTimer` would
+    /// give them, so none of them stalls for the duration of a tracking gesture — a window
+    /// resize, or a drag inside the popover's scroll view. That matters differently for each
+    /// and for all of them: a call ending mid-drag should still be detected, stream health
+    /// should still be checked, and a level meter should still be allowed to fall to zero
+    /// instead of freezing at its last reading, which is the whole point of `meterTimer`.
+    /// The meter tick also replaced a `Task.sleep` loop in the view, which was
+    /// executor-driven and so mode-independent to begin with; `.common` is the faithful port.
     private func startTimers() {
-        detectTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+        let detect = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
             // Compute the snapshot off the main actor — micInUseByOtherProcess enumerates
             // every CoreAudio process object, too heavy to run on the UI thread every 3s.
             // Only pollDetection (which touches the coordinator) needs the main actor.
             Task { let snapshot = DetectionProbes.snapshot(); await self?.pollDetection(snapshot, at: Date()) }
         }
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+        RunLoop.main.add(detect, forMode: .common)
+        detectTimer = detect
+        let health = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.coordinator.checkStreamHealth(now: Date()) }
         }
+        RunLoop.main.add(health, forMode: .common)
+        healthTimer = health
+        // A process tap delivers nothing while the output device is idle, so a level meter
+        // is only ever pushed *up* — nothing arrives to bring it back down, and the bar
+        // latches at its last reading claiming audio that stopped. This is the one owner of
+        // that correction, for the popover (idle and recording) and the main window's
+        // recording bar (recording only, which is the only phase it draws meters in).
+        // Neither view can do it for itself, because the failure is precisely the absence of
+        // the callbacks that would make a view redraw. It mutates only when a bar actually
+        // needs to drop, so an idle app publishes nothing.
+        //
+        // ponytail: unconditional 1s wakeup for the life of the process, chosen over
+        // starting and stopping it around monitoring and recording, which would mean four
+        // more lifecycle edges in the class CLAUDE.md flags as the concurrency-critical one.
+        // It publishes nothing unless a bar actually has to drop, and it is far cheaper than
+        // the 3s detect timer beside it, which enumerates every CoreAudio process object.
+        let meter = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.coordinator.expireStaleLevels() }
+        }
+        RunLoop.main.add(meter, forMode: .common)
+        meterTimer = meter
     }
 
     /// Polls in every phase: the mic probe excludes our own capture, so detection

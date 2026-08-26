@@ -92,6 +92,12 @@ public final class RecordingCoordinator: ObservableObject {
         var systemLevel: Float = 0
         var lastMicAudio = Date()
         var lastSysAudio = Date()
+        /// When the tap last called back *at all*, regardless of level — the basis for
+        /// expiring a latched meter. Deliberately NOT `lastSysAudio`, which only advances on
+        /// audible audio and belongs to `checkStreamHealth`: giving that field a second
+        /// reader with different semantics is how a later tweak for one master silently
+        /// breaks the other, twice-shipped in this codebase.
+        var lastSysLevelAt = Date()
         var streamWarning: String?
         var transcribeProgress: TranscribeProgress?
     }
@@ -133,7 +139,7 @@ public final class RecordingCoordinator: ObservableObject {
     private var monitorStartFailed = false
     @Published private var monitorMicLevel: Float = 0
     @Published private var monitorSystemLevel: Float = 0
-    /// When the system meter last heard from its tap, for `expireStaleMonitorLevels`. Only
+    /// When the system meter last heard from its tap, for `expireStaleLevels`. Only
     /// the system stream needs one: the mic is an AVAudioEngine tap that streams
     /// continuously, so a mic reading is never stale for want of callbacks — expiring it
     /// would be a chance to flicker "You" to zero on a slow input device, for no gain.
@@ -386,7 +392,7 @@ public final class RecordingCoordinator: ObservableObject {
         try? await monitor.sys.stop()
     }
 
-    /// Zero the system meter when its tap has gone quiet.
+    /// Zero the system meter when its tap has gone quiet — in either phase.
     ///
     /// A CoreAudio process tap delivers **nothing at all** while the output device is idle,
     /// so when the far side stops talking the "Them" bar simply stops being updated and
@@ -395,14 +401,26 @@ public final class RecordingCoordinator: ObservableObject {
     /// anything?". `SystemAudioRecorder.padSilenceToNow` cannot cover this: it is reachable
     /// only from a callback, and the failure is the absence of callbacks.
     ///
-    /// Known gap, deliberately not addressed here: while *recording* the meters read from
-    /// `live`, which this does not touch, so a system stream that goes quiet mid-interview
-    /// still latches. That is pre-existing behaviour on the recording path, and
-    /// `checkStreamHealth` already surfaces it as a warning after 60s.
-    public func expireStaleMonitorLevels(now: Date = Date(), after seconds: TimeInterval = 0.75) {
-        guard monitor != nil, monitorSystemLevel != 0, let at = monitorSystemAt,
-              now.timeIntervalSince(at) > seconds else { return }
-        monitorSystemLevel = 0
+    /// Covers the recording path as well as the monitor, and the recording path is where it
+    /// matters most: mid-interview is exactly when someone glances at "Them" to check the
+    /// other side is still being captured, and a bar frozen at its last reading answers yes
+    /// when the honest answer is "nothing has arrived for a while". `checkStreamHealth` only
+    /// speaks up after 60s, which is a different and much later question.
+    ///
+    /// The mic is left alone in both phases — pinned by a test per phase, because an earlier
+    /// version covered only the monitor and a mic expiry added to the recording branch
+    /// shipped green. An AVAudioEngine tap streams continuously, so a mic reading is never
+    /// stale for want of callbacks: a quiet room is a low bar, not a latched one, and
+    /// expiring it would only be a chance to flicker "You" to zero on a slow input device.
+    public func expireStaleLevels(now: Date = Date(), after seconds: TimeInterval = 0.75) {
+        if let session = live, session.systemLevel != 0,
+           now.timeIntervalSince(session.lastSysLevelAt) > seconds {
+            live?.systemLevel = 0
+        }
+        if monitor != nil, monitorSystemLevel != 0, let at = monitorSystemAt,
+           now.timeIntervalSince(at) > seconds {
+            monitorSystemLevel = 0
+        }
     }
 
     private func recordMonitorLevel(_ level: Float, stream: LevelStream, generation: Int) {
@@ -426,6 +444,7 @@ public final class RecordingCoordinator: ObservableObject {
             if level > 0.001 { live?.lastMicAudio = Date() }
         case .system:
             live?.systemLevel = level
+            live?.lastSysLevelAt = Date()
             if level > 0.001 { live?.lastSysAudio = Date() }
         }
     }
