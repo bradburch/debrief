@@ -152,6 +152,7 @@ private struct CompanyChatSheet: View {
     @State private var draft = ""
     @State private var waiting = false
     @State private var error: String?
+    @State private var request: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -201,6 +202,8 @@ private struct CompanyChatSheet: View {
             .padding()
         }
         .frame(minWidth: 520, minHeight: 480)
+        // Closing mid-question stops the call rather than letting it bill in the background.
+        .onDisappear { request?.cancel() }
     }
 
     private func send() {
@@ -210,7 +213,7 @@ private struct CompanyChatSheet: View {
         messages.append(ChatMessage(role: .user, content: q))
         let history = messages, ids = pipe.sessions.map(\.id)
         let coaching = env.coaching  // read at send time: picks up a key changed in Settings
-        Task {
+        request = Task {
             do {
                 let reply = try await coaching.askAboutCompany(sessionIds: ids, messages: history)
                 messages.append(ChatMessage(role: .assistant, content: reply))

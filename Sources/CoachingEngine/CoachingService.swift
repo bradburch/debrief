@@ -197,7 +197,10 @@ public struct CoachingService: Sendable {
     /// (`rebuildCoaching()`) applies to the next question with no relaunch.
     public func askAboutCompany(sessionIds: [Int64], messages: [ChatMessage]) async throws -> String {
         let details = sessionIds.compactMap { try? db.sessionDetail(id: $0) }
-        return try await llm.chat(system: Self.companyChatSystemPrompt(details), messages: messages)
+        let reply = try await llm.chat(system: Self.companyChatSystemPrompt(details), messages: messages)
+        // An empty assistant turn in the history makes the next Anthropic request a 400.
+        guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ClaudeError.emptyResponse }
+        return reply
     }
 
     /// ponytail: a flat character ceiling (~75k tokens) rather than per-provider token
