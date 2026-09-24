@@ -66,6 +66,21 @@ public struct OpenAICompatibleClient: CoachingLLM {
 
     public func generateCoaching(systemPrompt: String, userMessage: String,
                                  dimensions: [String]) async throws -> CoachingResult {
+        let content = try await complete([
+            ["role": "system",
+             "content": systemPrompt + "\n\n" + Self.formatAppendix(dimensions: dimensions)],
+            ["role": "user", "content": userMessage],
+        ])
+        return try Self.decodeCoaching(from: content, dimensions: dimensions)
+    }
+
+    public func chat(system: String, messages: [ChatMessage]) async throws -> String {
+        try await complete([["role": "system", "content": system]]
+            + messages.map { ["role": $0.role.rawValue, "content": $0.content] })
+    }
+
+    /// POSTs to /chat/completions and returns the first choice's message text.
+    func complete(_ messages: [[String: String]]) async throws -> String {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
         request.timeoutInterval = 600  // local inference on a long transcript is slow
@@ -73,15 +88,7 @@ public struct OpenAICompatibleClient: CoachingLLM {
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system",
-                 "content": systemPrompt + "\n\n" + Self.formatAppendix(dimensions: dimensions)],
-                ["role": "user", "content": userMessage],
-            ],
-            "stream": false,
-        ]
+        let body: [String: Any] = ["model": model, "messages": messages, "stream": false]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
@@ -101,7 +108,7 @@ public struct OpenAICompatibleClient: CoachingLLM {
         guard let content = envelope.choices.first?.message.content else {
             throw ClaudeError.emptyResponse
         }
-        return try Self.decodeCoaching(from: content, dimensions: dimensions)
+        return content
     }
 
     /// Pulls a valid `CoachingResult` out of free-form model text.

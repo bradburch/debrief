@@ -62,12 +62,28 @@ public struct ClaudeCodeCLIClient: CoachingLLM {
         // The rubric goes in --system-prompt (a few KB, comfortably under ARG_MAX) and the
         // transcript goes on stdin, because a long interview can approach the 1MB argv limit.
         let system = systemPrompt + "\n\n" + OpenAICompatibleClient.formatAppendix(dimensions: dimensions)
+        let result = try await resultText(system: system, stdin: userMessage)
+        return try OpenAICompatibleClient.decodeCoaching(from: result, dimensions: dimensions)
+    }
+
+    /// `-p` is single-shot, so the history is flattened into one stdin prompt. The context
+    /// goes on stdin too, not in --system-prompt: a company's transcripts can pass ARG_MAX.
+    public func chat(system: String, messages: [ChatMessage]) async throws -> String {
+        let history = messages.map { "\($0.role == .user ? "User" : "Assistant"): \($0.content)" }
+            .joined(separator: "\n\n")
+        return try await resultText(
+            system: "Answer the user's latest question using the context and conversation on stdin.",
+            stdin: "<context>\n\(system)\n</context>\n\n<conversation>\n\(history)\n</conversation>")
+    }
+
+    /// Runs `claude -p` and unwraps the JSON envelope's `result` text.
+    func resultText(system: String, stdin: String) async throws -> String {
         let output = try await run(arguments: [
             "-p",
             "--output-format", "json",
             "--model", model,
             "--system-prompt", system,
-        ], stdin: userMessage)
+        ], stdin: stdin)
 
         struct Envelope: Decodable {
             let result: String?
@@ -80,7 +96,7 @@ public struct ClaudeCodeCLIClient: CoachingLLM {
         guard envelope.is_error != true, let result = envelope.result else {
             throw ClaudeError.httpStatus(0, body: envelope.subtype ?? "claude CLI reported an error")
         }
-        return try OpenAICompatibleClient.decodeCoaching(from: result, dimensions: dimensions)
+        return result
     }
 
     /// Runs the CLI and returns its stdout.
