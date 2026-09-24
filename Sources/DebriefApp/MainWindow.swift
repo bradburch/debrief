@@ -47,7 +47,6 @@ struct MainWindow: View {
             VStack(spacing: 0) {
                 RecordingBar()
                 RecoachBar()
-                Divider()
                 switch env.selectedTab ?? .sessions {
                 case .sessions: SessionsView()
                 case .pipeline: PipelineView()
@@ -57,6 +56,7 @@ struct MainWindow: View {
             }
         }
         .frame(minWidth: 900, minHeight: 560)
+        .toolbar { RecordingToolbarItems(env: env) }
         // Presented here, not in the views that open it: the menu-bar popover is a
         // MenuBarExtra window and can't reliably present a sheet of its own, so its
         // "Plan a call" opens this window and sets the same draft.
@@ -93,54 +93,94 @@ struct RecoachBar: View {
     }
 }
 
+/// Recording status in the window toolbar, where it stays visible whichever tab is open:
+/// the idle primary action, or the live timer and both meters. The stop-form needs more room
+/// than a toolbar has, so it stays in `RecordingBar` below.
+struct RecordingToolbarItems: ToolbarContent {
+    @ObservedObject var env: AppEnvironment
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if case .recording(let started) = env.coordinator.recordingPhase {
+                Label {
+                    Text(started, style: .timer).monospacedDigit()
+                } icon: {
+                    Image(systemName: "record.circle.fill")
+                }
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(.red)
+                .help("Recording — stop it from the bar below")
+                ToolbarMeter(label: "You", level: env.coordinator.micLevel)
+                ToolbarMeter(label: "Them", level: env.coordinator.systemLevel)
+            } else {
+                if env.callDetected {
+                    Label("Call detected", systemImage: "phone.fill")
+                        .labelStyle(.titleAndIcon).foregroundStyle(.orange)
+                }
+                Button {
+                    Task { await env.startRecording() }
+                } label: {
+                    Label(env.callDetected ? "Record this call" : "Start recording",
+                          systemImage: "record.circle")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)   // the one thing to do while idle
+                .tint(.red)
+            }
+        }
+    }
+}
+
+private struct ToolbarMeter: View {
+    let label: String
+    let level: Float
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(label).font(.caption)
+            ProgressView(value: min(Double(level) * 4, 1.0))  // same scaling as LevelRow
+                .frame(width: 60)
+        }
+        .help("\(label) input level")
+    }
+}
+
+/// What doesn't fit in the toolbar: the stop-form and stream warning while recording, a
+/// failed start, and finalize jobs. Renders nothing when none of those apply.
 struct RecordingBar: View {
     @EnvironmentObject var env: AppEnvironment
 
+    private var isRecording: Bool {
+        if case .recording = env.coordinator.recordingPhase { return true }
+        return false
+    }
+    private var failure: String? {
+        if case .failed(let message) = env.coordinator.recordingPhase { return message }
+        return nil
+    }
+
     var body: some View {
-        // Recording state on top, finalize jobs underneath — both at once, since a debrief
-        // in flight no longer blocks the next recording.
-        VStack(alignment: .leading, spacing: 8) {
-            if case .recording(let started) = env.coordinator.recordingPhase {
-                HStack {
-                    Label("Recording \(started, style: .timer)", systemImage: "record.circle.fill")
-                        .foregroundStyle(.red)
-                    Spacer()
-                }
-                LevelRow(label: "You", level: env.coordinator.micLevel)
-                LevelRow(label: "Them", level: env.coordinator.systemLevel)
-                if let warning = env.coordinator.streamWarning {
-                    Label(warning, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.yellow).font(.caption)
-                }
-                // Shared with MenuBarView's popover form (RecordingControls.swift) so the
-                // two surfaces can't drift — this main-window bar used to lack the
-                // "From calendar" menu entirely because the form was duplicated by hand.
-                RecordingControls(axis: .horizontal)
-            } else {
-                HStack {
-                    if case .failed(let message) = env.coordinator.recordingPhase {
-                        Label(message, systemImage: "xmark.octagon.fill")
-                            .foregroundStyle(.red).font(.caption).lineLimit(3)
-                    } else if env.callDetected {
-                        Label("Call detected", systemImage: "phone.fill").foregroundStyle(.orange)
-                    } else {
-                        Text("No recording in progress").foregroundStyle(.secondary)
+        if isRecording || failure != nil || !env.coordinator.finalizeJobs.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                if isRecording {
+                    if let warning = env.coordinator.streamWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow).font(.caption)
                     }
-                    Spacer()
-                    Button {
-                        Task { await env.startRecording() }
-                    } label: {
-                        Label(env.callDetected ? "Record this call" : "Start recording", systemImage: "record.circle")
-                    }
-                    .buttonStyle(.borderedProminent)   // the one thing to do on an idle bar
+                    // Shared with MenuBarView's popover form (RecordingControls.swift) so the
+                    // two surfaces can't drift.
+                    RecordingControls(axis: .horizontal)
+                } else if let failure {
+                    Label(failure, systemImage: "xmark.octagon.fill")
+                        .foregroundStyle(.red).font(.caption).lineLimit(3)
+                }
+                if !env.coordinator.finalizeJobs.isEmpty {
+                    if isRecording || failure != nil { Divider() }
+                    FinalizeJobsSection()
                 }
             }
-            if !env.coordinator.finalizeJobs.isEmpty {
-                Divider()
-                FinalizeJobsSection()
-            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar)
         }
-        .padding(10)
-        .background(.bar)
     }
 }

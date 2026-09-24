@@ -59,6 +59,23 @@ final class ClaudeClientTests: XCTestCase {
         XCTAssertEqual(result.overallScore, 3.25, accuracy: 0.001)
     }
 
+    func testChatSendsHistoryWithoutSchemaAndReturnsText() async throws {
+        MockURLProtocol.handler = { request in
+            let body = try! JSONSerialization.jsonObject(with: request.bodyData()) as! [String: Any]
+            XCTAssertEqual(body["system"] as? String, "ctx")
+            XCTAssertNil(body["output_config"], "chat is free text — no JSON schema")
+            let msgs = body["messages"] as! [[String: String]]
+            XCTAssertEqual(msgs.map { $0["role"]! }, ["user", "assistant", "user"])
+            XCTAssertEqual(msgs.last?["content"], "and next steps?")
+            return (200, self.envelope(text: "A panel next week."))
+        }
+        let reply = try await makeClient().chat(system: "ctx", messages: [
+            ChatMessage(role: .user, content: "hi"), ChatMessage(role: .assistant, content: "hello"),
+            ChatMessage(role: .user, content: "and next steps?"),
+        ])
+        XCTAssertEqual(reply, "A panel next week.")
+    }
+
     func testRefusalThrows() async {
         MockURLProtocol.handler = { _ in (200, self.envelope(text: "", stopReason: "refusal")) }
         do {

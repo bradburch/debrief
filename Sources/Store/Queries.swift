@@ -421,6 +421,21 @@ extension AppDatabase {
                 }
                 return CompanyPipeline(company: co, sessions: sessions, processNotesJSON: notes)
             }
+            // Live pipelines lead, dead ones sink; within a status the most recently
+            // interviewed company comes first. Stable over the name order above for ties.
+            .sorted { a, b in
+                let ra = Self.pipelineRank(a.company.status), rb = Self.pipelineRank(b.company.status)
+                if ra != rb { return ra < rb }
+                return (a.sessions.last?.date ?? .distantPast) > (b.sessions.last?.date ?? .distantPast)
+            }
+        }
+    }
+
+    private static func pipelineRank(_ s: CompanyStatus) -> Int {
+        switch s {
+        case .active: return 0
+        case .offer: return 1
+        case .dead: return 2
         }
     }
 

@@ -5,6 +5,7 @@ import CoachingEngine  // Highlight — process notes are stored as its {t,note}
 struct PipelineView: View {
     @EnvironmentObject var env: AppEnvironment
     @State private var pipelines: [CompanyPipeline] = []
+    @State private var chatPipe: CompanyPipeline?
 
     var body: some View {
         Group {
@@ -18,6 +19,7 @@ struct PipelineView: View {
             }
         }
         .onAppear(perform: reload)
+        .sheet(item: $chatPipe) { CompanyChatSheet(pipe: $0) }
     }
 
     private var pipelineList: some View {
@@ -58,6 +60,10 @@ struct PipelineView: View {
                         HStack {
                             Text(pipe.company.name).font(.headline)
                             Spacer()
+                            Button("Ask about \(pipe.company.name)", systemImage: "bubble.left.and.text.bubble.right") {
+                                chatPipe = pipe
+                            }
+                            .controlSize(.small)
                             // Titled, then hidden: an empty-string label leaves VoiceOver
                             // announcing an unnamed pop-up in a view with one per company.
                             Picker("Status", selection: statusBinding(for: pipe.company)) {
@@ -131,6 +137,90 @@ private struct ProcessNotes: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Free-form Q&A over one company's sessions, using whatever LLM Settings configured.
+/// ponytail: history lives in this sheet's @State only — closing it forgets the chat. Persist
+/// to the DB if people start wanting to come back to a conversation.
+private struct CompanyChatSheet: View {
+    let pipe: CompanyPipeline
+    @EnvironmentObject var env: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
+    @State private var messages: [ChatMessage] = []
+    @State private var draft = ""
+    @State private var waiting = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Ask about \(pipe.company.name)").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding()
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if messages.isEmpty {
+                            Text("Ask anything about your \(pipe.sessions.count) recorded round(s) — e.g. \"What did they say about next steps?\"")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(messages) { m in
+                            // AttributedString, not LocalizedStringKey: a key treats "%" in a reply as a format specifier.
+                            Text((try? AttributedString(markdown: m.content, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(m.content))
+                                .textSelection(.enabled)
+                                .padding(8)
+                                .background(m.role == .user ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(.quaternary),
+                                            in: RoundedRectangle(cornerRadius: 8))
+                                .frame(maxWidth: .infinity, alignment: m.role == .user ? .trailing : .leading)
+                        }
+                        if waiting { ProgressView().controlSize(.small) }
+                        if let error {
+                            Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red).font(.caption)
+                                .textSelection(.enabled)
+                        }
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .padding()
+                }
+                .onChange(of: messages.count) { proxy.scrollTo("bottom") }
+            }
+            Divider()
+            HStack {
+                TextField("Ask a question", text: $draft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .onSubmit(send)
+                Button("Send", action: send)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(waiting || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding()
+        }
+        .frame(minWidth: 520, minHeight: 480)
+    }
+
+    private func send() {
+        let q = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !waiting else { return }
+        draft = ""; error = nil; waiting = true
+        messages.append(ChatMessage(role: .user, content: q))
+        let history = messages, ids = pipe.sessions.map(\.id)
+        let coaching = env.coaching  // read at send time: picks up a key changed in Settings
+        Task {
+            do {
+                let reply = try await coaching.askAboutCompany(sessionIds: ids, messages: history)
+                messages.append(ChatMessage(role: .assistant, content: reply))
+            } catch {
+                // Drop the unanswered question so the history stays user/assistant alternating.
+                messages.removeLast()
+                draft = q
+                self.error = String(describing: error)
+            }
+            waiting = false
         }
     }
 }

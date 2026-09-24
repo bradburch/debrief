@@ -212,6 +212,19 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(pipe.flatMap(\.sessions).count, 2)
     }
 
+    func testPipelineRanksActiveFirstAndDeadLast() throws {
+        let dead = try db.fetchOrCreateCompany(named: "Aardvark")   // alphabetically first
+        let old = try db.fetchOrCreateCompany(named: "Beta")
+        let recent = try db.fetchOrCreateCompany(named: "Gamma")
+        for (co, t) in [(dead, 3.0), (old, 1.0), (recent, 2.0)] {
+            _ = try db.insertSession(.init(id: nil, companyId: co.id!, roundType: .technical,
+                                           date: Date(timeIntervalSince1970: 1_750_000_000 + t * 86_400),
+                                           durationSeconds: 60, contextNotes: "", coachingStatus: .pending))
+        }
+        try db.updateCompanyStatus(id: dead.id!, status: .dead)
+        XCTAssertEqual(try db.pipeline().map(\.company.name), ["Gamma", "Beta", "Aardvark"])
+    }
+
     func testTagFrequencyByMonthGroupsByMonth() throws {
         let co = try db.fetchOrCreateCompany(named: "Acme")
         // 1_750_000_000 = 2025-06-15 UTC; 1_753_000_000 = 2025-07-20 UTC.

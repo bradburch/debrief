@@ -7,6 +7,26 @@ public protocol CoachingLLM: Sendable {
     /// per-call rather than a constant — implementations must require exactly these keys.
     func generateCoaching(systemPrompt: String, userMessage: String,
                           dimensions: [String]) async throws -> CoachingResult
+
+    /// Plain-text multi-turn chat (the per-company "Ask about" sheet). No schema, no scoring:
+    /// `messages` alternate user/assistant and end on a user turn; returns the reply text.
+    func chat(system: String, messages: [ChatMessage]) async throws -> String
+}
+
+public struct ChatMessage: Sendable, Equatable, Identifiable {
+    public enum Role: String, Sendable { case user, assistant }
+    public let id = UUID()
+    public let role: Role
+    public let content: String
+    public init(role: Role, content: String) { self.role = role; self.content = content }
+    public static func == (a: ChatMessage, b: ChatMessage) -> Bool { a.role == b.role && a.content == b.content }
+}
+
+extension CoachingLLM {
+    /// Default so test fakes needn't implement chat; all three real clients override it.
+    public func chat(system: String, messages: [ChatMessage]) async throws -> String {
+        throw ClaudeError.chatUnsupported
+    }
 }
 
 public enum ClaudeError: Error, Equatable {
@@ -14,6 +34,7 @@ public enum ClaudeError: Error, Equatable {
     case refusal
     case truncated
     case emptyResponse
+    case chatUnsupported
 }
 
 public struct AnthropicClient: CoachingLLM {
@@ -105,14 +126,7 @@ public struct AnthropicClient: CoachingLLM {
 
     public func generateCoaching(systemPrompt: String, userMessage: String,
                                  dimensions: [String]) async throws -> CoachingResult {
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 300
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-
-        let body: [String: Any] = [
+        let text = try await send([
             "model": model,
             "max_tokens": 16000,
             "thinking": thinkingParam,
@@ -120,7 +134,28 @@ public struct AnthropicClient: CoachingLLM {
             "messages": [["role": "user", "content": userMessage]],
             "output_config": ["format": ["type": "json_schema",
                                          "schema": Self.outputSchema(dimensions: dimensions)]],
-        ]
+        ])
+        return try JSONDecoder().decode(CoachingResult.self, from: Data(text.utf8))
+    }
+
+    public func chat(system: String, messages: [ChatMessage]) async throws -> String {
+        try await send([
+            "model": model,
+            "max_tokens": 16000,
+            "thinking": thinkingParam,
+            "system": system,
+            "messages": messages.map { ["role": $0.role.rawValue, "content": $0.content] },
+        ])
+    }
+
+    /// POSTs a Messages API body and returns the first non-empty text block.
+    func send(_ body: [String: Any]) async throws -> String {
+        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 300
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
@@ -140,10 +175,9 @@ public struct AnthropicClient: CoachingLLM {
         case "max_tokens": throw ClaudeError.truncated
         default: break
         }
-        guard let text = envelope.content.first(where: { $0.type == "text" && $0.text?.isEmpty == false })?.text,
-              let payload = text.data(using: .utf8) else {
+        guard let text = envelope.content.first(where: { $0.type == "text" && $0.text?.isEmpty == false })?.text else {
             throw ClaudeError.emptyResponse
         }
-        return try JSONDecoder().decode(CoachingResult.self, from: payload)
+        return text
     }
 }

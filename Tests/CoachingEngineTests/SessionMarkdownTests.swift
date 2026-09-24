@@ -37,6 +37,16 @@ final class SessionMarkdownTests: XCTestCase {
         XCTAssertTrue(md.contains("[00:00:04] YOU: I led the checkout redesign."))
     }
 
+    func testCompanyChatContextIncludesSessionAndTruncatesAtLimit() {
+        let full = CoachingService.companyChatSystemPrompt([fixture()])
+        XCTAssertTrue(full.contains("Acme Corp!"))
+        XCTAssertTrue(full.contains("Next round in a week"))
+        XCTAssertTrue(full.contains("[00:00:04] YOU: I led the checkout redesign."))
+        let capped = CoachingService.companyChatSystemPrompt([fixture()], limit: SessionMarkdown.render(fixture()).count - 10)
+        XCTAssertTrue(capped.contains("truncated: context limit reached"))
+        XCTAssertFalse(capped.contains("I led the checkout redesign."), "transcript tail is what gets cut")
+    }
+
     func testFilenameIsDeterministicAndSlugged() {
         XCTAssertEqual(SessionMarkdown.filename(for: fixture()), "2023-11-14-acme-corp-product_sense-42.md")
     }

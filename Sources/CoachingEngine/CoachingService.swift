@@ -191,4 +191,40 @@ public struct CoachingService: Sendable {
         return errors
     }
 
+
+    /// One turn of the per-company chat: renders the company's sessions as context and asks
+    /// the configured LLM. Uses this service's `llm`, so a key/model changed in Settings
+    /// (`rebuildCoaching()`) applies to the next question with no relaunch.
+    public func askAboutCompany(sessionIds: [Int64], messages: [ChatMessage]) async throws -> String {
+        let details = sessionIds.compactMap { try? db.sessionDetail(id: $0) }
+        return try await llm.chat(system: Self.companyChatSystemPrompt(details), messages: messages)
+    }
+
+    /// ponytail: a flat character ceiling (~75k tokens) rather than per-provider token
+    /// counting. Newest session first, each via `SessionMarkdown` (debrief before transcript),
+    /// so what gets cut is the oldest sessions' transcript tails. A small-context local model
+    /// may still overflow; lower the cap if that bites.
+    static let companyChatContextLimit = 300_000
+
+    static func companyChatSystemPrompt(_ details: [SessionDetail],
+                                        limit: Int = companyChatContextLimit) -> String {
+        let company = details.first?.company.name ?? "this company"
+        var context = ""
+        for d in details.sorted(by: { $0.session.date > $1.session.date }) {
+            let doc = SessionMarkdown.render(d) + "\n\n---\n\n"
+            let room = limit - context.count
+            if doc.count <= room { context += doc; continue }
+            if room > 200 { context += doc.prefix(room) + "\n\n[…truncated: context limit reached]\n" }
+            break
+        }
+        return """
+        You are helping a job candidate reason about their interview process with \(company). \
+        Below are their recorded interviews with this company, newest first: each has the \
+        debrief (verdict, feedback, process notes, action items) and the transcript, where \
+        YOU is the candidate and THEM is the interviewer. Answer from this material; quote \
+        or cite the round and timestamp when useful, and say plainly when the answer isn't in it.
+
+        \(context)
+        """
+    }
 }
