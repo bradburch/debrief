@@ -333,12 +333,14 @@ struct SessionDetailView: View {
             return
         }
         do {
-            // A case-only change is a correction to the company's spelling, not a move —
-            // unless that spelling already exists as its own company, then it's a move into it.
-            let company = trimmed.caseInsensitiveCompare(d.company.name) == .orderedSame && !d.company.isPlaceholder
-                && !env.companySuggestions.contains(trimmed)
-                ? try env.db.renameCompany(id: d.company.id!, to: trimmed)
-                : try env.db.renameSession(id: sessionId, companyNamed: trimmed)
+            // A case-only change is a correction to the company's spelling, not a move — unless
+            // that exact spelling already exists as its own row (UNIQUE is case-sensitive), in
+            // which case the rename fails and this session moves into that company instead.
+            let caseOnly = trimmed.caseInsensitiveCompare(d.company.name) == .orderedSame && !d.company.isPlaceholder
+            let company = try caseOnly
+                ? ((try? env.db.renameCompany(id: d.company.id!, to: trimmed))
+                    ?? env.db.renameSession(id: sessionId, companyNamed: trimmed))
+                : env.db.renameSession(id: sessionId, companyNamed: trimmed)
             detail = SessionDetail(session: d.session, company: company,
                                     segments: d.segments, feedback: d.feedback, tags: d.tags)
             companyName = Self.editableName(company)
