@@ -43,9 +43,9 @@ struct ScoreBadge: View {
     var body: some View {
         switch style {
         case .inline:
-            HStack(spacing: 6) { verdict; score }
+            HStack(spacing: Spacing.s) { score; verdict }
         case .stacked:
-            VStack(spacing: 2) { verdict; score }
+            VStack(alignment: .leading, spacing: Spacing.xxs) { verdict; score }
         case .prominent:
             HStack(alignment: .firstTextBaseline) { verdict; Spacer(); score }
         }
@@ -54,9 +54,21 @@ struct ScoreBadge: View {
     @ViewBuilder
     private var verdict: some View {
         if let advancement {
-            Text(advancement.displayName)
-                .font(verdictFont).bold()
+            // A tinted capsule in lists and tiles; at the debrief's head, the verdict is set
+            // as a headline instead — a pill that size reads as a button.
+            if style == .prominent {
+                Label {
+                    Text(advancement.displayName)
+                } icon: {
+                    Image(systemName: advancement.advances ? "arrow.up.right.circle.fill"
+                                                           : "arrow.down.right.circle.fill")
+                }
+                .font(verdictFont.weight(.semibold))
                 .foregroundStyle(Color.forAdvancement(advancement))
+            } else {
+                StatusCapsule(text: advancement.displayName,
+                              color: Color.forAdvancement(advancement))
+            }
         } else if showsPlaceholder {
             Text("—")
                 .font(verdictFont)
@@ -83,7 +95,7 @@ struct ScoreBadge: View {
     private var verdictFont: Font {
         switch style {
         case .inline: return .caption
-        case .stacked: return .body
+        case .stacked: return .callout
         case .prominent: return .title2
         }
     }
@@ -94,8 +106,8 @@ struct ScoreBadge: View {
     private var scoreFont: Font? {
         switch style {
         case .inline: return nil
-        case .prominent: return .caption
-        case .stacked: return .caption2
+        case .prominent: return .callout
+        case .stacked: return .caption
         }
     }
 }

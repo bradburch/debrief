@@ -22,28 +22,34 @@ struct RecoveryPrompt: View {
     private var manifestDate: Date? { RecordingStore.readManifest(in: dir)?.startedAt }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let date = manifestDate {
-                Label("Unsaved recording from \(date, style: .relative) ago", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow).font(.caption)
-            } else {
-                Label("Unsaved recording found", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow).font(.caption)
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Unsaved recording").font(.subheadline.weight(.semibold))
+                    if let date = manifestDate {
+                        Text("From \(date, style: .relative) ago")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                PrefillMenu(onPlanned: applyPlan, onCalendar: applyCalendar)
+                    .fixedSize()
             }
-            // The same menu the stop-form offers. Without it, a crash costs the planned
-            // call's round type, notes and grading criteria — the annotations are only
-            // recoverable by retyping them.
-            PrefillMenu(onPlanned: applyPlan, onCalendar: applyCalendar)
-            TextField("Company", text: $company)
+            // The same menu the stop-form offers (in the header above). Without it, a crash
+            // costs the planned call's round type, notes and grading criteria — the
+            // annotations are only recoverable by retyping them.
+            CompanyField(text: $company)
+                .textFieldStyle(.roundedBorder)
             Picker("Round", selection: $roundType) {
                 ForEach(env.prompts.availableRoundTypes(), id: \.self) { Text($0.displayName).tag($0) }
             }
             // The same latch as the stop-form, and the same undo: here criteria and the plan
             // claim are set at apply and otherwise released only by recovering or discarding.
             if !criteria.isEmpty {
-                HStack(spacing: 2) {
-                    Label("Grading criteria applied", systemImage: "text.badge.checkmark")
-                        .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: Spacing.xxs) {
+                    StatusCapsule(text: "Grading criteria applied", color: .accentColor,
+                                  systemImage: "text.badge.checkmark")
                     Button {
                         criteria = ""
                         plannedCallId = nil
@@ -52,6 +58,7 @@ struct RecoveryPrompt: View {
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Remove grading criteria")
                     .help("Don't apply these criteria, and keep the planned call")
                 }
                 .help(criteria)
@@ -66,7 +73,8 @@ struct RecoveryPrompt: View {
                 Button("Recover") {
                     isRecovering = true
                     Task {
-                        let name = company.isEmpty ? "Unknown" : company
+                        let typed = env.canonicalCompany(company)
+                        let name = typed.isEmpty ? Company.placeholderName : typed
                         await env.recover(dir,
                                           metadata: .init(company: name, roundType: roundType,
                                                           notes: notes, customInstructions: criteria),
@@ -76,9 +84,13 @@ struct RecoveryPrompt: View {
                 }
                 .disabled(isRecovering)
             }
+            .padding(.top, Spacing.xxs)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.yellow.opacity(0.1)))
+        .padding(Spacing.m)
+        .background(Color.orange.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+            .strokeBorder(Color.orange.opacity(0.3), lineWidth: 0.5))
         // This surface never runs startRecording's refresh, and it is the one that shows up
         // after a crash — when the plan for the crashed call is exactly what's needed.
         .onAppear { env.refreshPlannedCalls() }

@@ -11,7 +11,7 @@ struct DebriefApp: App {
         MenuBarExtra {
             MenuBarView().environmentObject(env)
         } label: {
-            MenuBarLabel(symbol: menuBarSymbol)
+            MenuBarLabel(symbol: menuBarSymbol, caption: menuBarCaption)
         }
         .menuBarExtraStyle(.window)
 
@@ -40,6 +40,17 @@ struct DebriefApp: App {
         if env.coordinator.finalizeJobs.contains(where: { $0.failure != nil }) { return "exclamationmark.circle" }
         return env.callDetected ? "phone.circle.fill" : "waveform.circle"
     }
+
+    /// A word beside the glyph for the two states you act on. The symbol swap alone
+    /// (waveform → phone) was too subtle to notice in a crowded menu bar.
+    private var menuBarCaption: String? {
+        // Static text only. A self-updating `Text(_, style: .timer)` here pinned the main
+        // thread at 100%: MenuBarExtra re-rasterizes the status item on every tick and the
+        // re-render schedules the next one, so the app froze the moment recording began.
+        // The live timer is in the popover and the window toolbar.
+        if case .recording = env.coordinator.recordingPhase { return "Rec" }
+        return env.callDetected ? "Call" : nil
+    }
 }
 
 /// The menu-bar icon, and the one place `AppDelegate.openMainWindow` can be armed early
@@ -51,10 +62,14 @@ struct DebriefApp: App {
 /// `openWindow` in scope.
 private struct MenuBarLabel: View {
     let symbol: String
+    let caption: String?
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: symbol)
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+            if let caption { Text(caption) }
+        }
             .onAppear { AppDelegate.openMainWindow = { openWindow(id: "main") } }
     }
 }

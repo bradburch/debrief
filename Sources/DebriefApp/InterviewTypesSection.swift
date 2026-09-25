@@ -19,30 +19,42 @@ struct InterviewTypesSection: View {
     @State private var error: String?
 
     var body: some View {
-        Section("Interview types") {
+        Section {
             ForEach(types, id: \.self) { type in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(type.displayName)
-                        if transcriptOnly.contains(type.rawValue) {
-                            Text("Transcript only — recorded and transcribed, never scored")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                HStack(spacing: Spacing.s) {
+                    Text(type.displayName)
+                    if transcriptOnly.contains(type.rawValue) {
+                        StatusCapsule(text: "Transcript only")
+                            .help("Recorded and transcribed, never scored")
                     }
                     Spacer()
-                    Button { editing = draft(for: type, duplicating: false) } label: {
-                        Label("Edit", systemImage: "pencil")
+                    // Icon-only and borderless: three bordered, titled buttons on every row
+                    // turned the list into a wall of controls. The Label titles stay as the
+                    // accessibility names, and the tooltips say the same thing.
+                    HStack(spacing: Spacing.m) {
+                        Button { editing = draft(for: type, duplicating: false) } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .help("Edit \(type.displayName)")
+                        Button { editing = draft(for: type, duplicating: true) } label: {
+                            Label("Duplicate", systemImage: "plus.square.on.square")
+                        }
+                        .help("Duplicate \(type.displayName)")
+                        Button(role: .destructive) { attemptDelete(type) } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .help("Delete \(type.displayName)")
                     }
-                    Button { editing = draft(for: type, duplicating: true) } label: {
-                        Label("Duplicate", systemImage: "plus.square.on.square")
-                    }
-                    Button(role: .destructive) { attemptDelete(type) } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
                 }
-                // macOS push buttons drop a Label's icon unless asked; three same-shaped
-                // buttons per row are hard to tell apart at a glance without them.
-                .labelStyle(.titleAndIcon)
+                .contextMenu {
+                    Button("Edit…") { editing = draft(for: type, duplicating: false) }
+                    Button("Duplicate") { editing = draft(for: type, duplicating: true) }
+                    Divider()
+                    Button("Delete…", role: .destructive) { attemptDelete(type) }
+                }
             }
             Button {
                 editing = TypeDraft(name: "", rawValue: nil, markdown: Self.starterMarkdown,
@@ -50,12 +62,17 @@ struct InterviewTypesSection: View {
             } label: {
                 Label("New type…", systemImage: "plus")
             }
+            // macOS push buttons drop a Label's icon unless asked.
             .labelStyle(.titleAndIcon)
-            Text("Each type is a markdown file in the prompts folder. Transcript-only types are recorded and transcribed but never sent to an LLM, so they cost nothing and stay out of your trends.")
-                .font(.caption).foregroundStyle(.secondary)
             if let error {
-                Text(error).font(.caption).foregroundStyle(.red)
+                InlineMessage(text: error, kind: .error)
             }
+        } header: {
+            Text("Interview types")
+        } footer: {
+            Text("Each type is a markdown file in the prompts folder. Transcript-only types are never sent to an LLM, so they cost nothing and stay out of your trends.")
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear(perform: reload)
         .sheet(item: $editing) { draft in
@@ -171,30 +188,42 @@ private struct TypeEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(draft.isNew ? "New interview type" : "Edit \(draft.name)").font(.headline)
-            if draft.isNew {
-                TextField("Name (e.g. Take Home Review)", text: $draft.name)
-                if !draft.name.isEmpty, resolvedRawValue == nil {
-                    Text("That name is already taken or can't be used as a filename.")
-                        .font(.caption).foregroundStyle(.red)
-                } else if let slug = resolvedRawValue {
-                    Text("Saved as \(slug).md").font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    if draft.isNew {
+                        TextField("Name", text: $draft.name, prompt: Text("e.g. Take Home Review"))
+                        if !draft.name.isEmpty, resolvedRawValue == nil {
+                            InlineMessage(text: "That name is already taken or can't be used as a filename.",
+                                          kind: .error)
+                        } else if let slug = resolvedRawValue {
+                            LabeledContent("File", value: "\(slug).md")
+                        }
+                    }
+                    Toggle(isOn: $draft.transcriptOnly) {
+                        Text("Transcript only")
+                        Text(draft.transcriptOnly
+                             ? "No LLM call, no scores, and excluded from trends and re-coaching."
+                             : "Scored using the dimensions declared in the prompt.")
+                    }
+                } header: {
+                    Text(draft.isNew ? "New interview type" : "Edit \(draft.name)")
+                        .font(.headline)
+                }
+                Section("Prompt") {
+                    TextEditor(text: $draft.markdown)
+                        .font(.system(.body, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 300)
+                        .accessibilityLabel("Prompt")
                 }
             }
-            Toggle("Transcript only (record and transcribe, never score)", isOn: $draft.transcriptOnly)
-            Text(draft.transcriptOnly
-                 ? "No LLM call, no scores, and excluded from trends and re-coaching."
-                 : "Scored using the dimensions declared below.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Prompt").font(.subheadline)
-            TextEditor(text: $draft.markdown)
-                .font(.system(.body, design: .monospaced))
-                .frame(minWidth: 520, minHeight: 300)
-                .border(.separator)
+            .formStyle(.grouped)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     if let rawValue = resolvedRawValue { onSave(draft, rawValue) }
                 }
@@ -202,7 +231,8 @@ private struct TypeEditor: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(resolvedRawValue == nil)
             }
+            .padding(Spacing.l)
         }
-        .padding()
+        .frame(minWidth: 600, minHeight: 520)
     }
 }

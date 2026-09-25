@@ -427,7 +427,7 @@ public final class RecordingCoordinator: ObservableObject {
         // Pinned to the generation for the same reason a recording's callbacks are pinned to
         // its session key: a buffer already in flight when the monitor was torn down must
         // not leave a stale reading frozen on the meter.
-        guard monitorGeneration == generation, monitor != nil else { return }
+        guard monitorGeneration == generation, monitor != nil, shouldPublishLevel(stream) else { return }
         switch stream {
         case .mic: monitorMicLevel = level
         case .system: monitorSystemLevel = level; monitorSystemAt = Date()
@@ -436,8 +436,22 @@ public final class RecordingCoordinator: ObservableObject {
 
     private enum LevelStream { case mic, system }
 
+    /// Level callbacks arrive once per audio buffer (~100/s per stream), and each one mutates
+    /// @Published state that AppEnvironment forwards app-wide — so unthrottled, every view
+    /// re-rendered ~100×/s during a recording (measured: ~60% CPU, main thread saturated,
+    /// accessibility reads timing out). A meter needs ~10 frames/s; the health timestamps
+    /// these also stamp are checked on a 10s timer, so 0.1s of slack is invisible to them.
+    /// Deliberately not @Published.
+    private var lastLevelPublish: [LevelStream: Date] = [:]
+
+    private func shouldPublishLevel(_ stream: LevelStream, now: Date = Date()) -> Bool {
+        if let last = lastLevelPublish[stream], now.timeIntervalSince(last) < 0.1 { return false }
+        lastLevelPublish[stream] = now
+        return true
+    }
+
     private func recordLevel(_ level: Float, stream: LevelStream, for key: String) {
-        guard live?.key == key else { return }
+        guard live?.key == key, shouldPublishLevel(stream) else { return }
         switch stream {
         case .mic:
             live?.micLevel = level
@@ -591,6 +605,15 @@ public final class RecordingCoordinator: ObservableObject {
     /// earlier job has. Jobs enqueued after the call are not awaited.
     public func awaitAllFinalizes() async {
         await finalizeChain?.value
+    }
+
+    /// What the UI lists: running jobs and failures. A successful debrief hides itself —
+    /// the session appearing in Sessions is the confirmation. Filtered rather than removed
+    /// because `awaitFinalize` and tests read finished jobs from `finalizeJobs`.
+    /// ponytail: finished jobs accumulate for the process lifetime (one small struct per
+    /// interview); prune on success if that ever matters.
+    public var visibleFinalizeJobs: [FinalizeJob] {
+        finalizeJobs.filter { !$0.isFinished || $0.failure != nil }
     }
 
     /// Removes a finished job (and its result handle) from the display list.
