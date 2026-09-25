@@ -17,7 +17,7 @@ struct TrendsView: View {
             // not have.
             if scorePoints.isEmpty {
                 ContentUnavailableView(
-                    "No scored debriefs yet",
+                    "No Scored Debriefs Yet",
                     systemImage: "chart.line.uptrend.xyaxis",
                     description: Text(roundFilter == nil
                                       ? "Scores appear here once an interview has been debriefed."
@@ -29,7 +29,7 @@ struct TrendsView: View {
         .onAppear(perform: reload)
         .onChange(of: roundFilter) { _, _ in reload() }
         // The filter is a view-wide control, not a chart's own axis, so it belongs in the
-        // window toolbar rather than floating above the first GroupBox.
+        // window toolbar rather than floating above the first chart card.
         .toolbar {
             ToolbarItem {
                 Picker("Round type", selection: $roundFilter) {
@@ -46,21 +46,11 @@ struct TrendsView: View {
 
     private var charts: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                GroupBox("Weakness tags per month") {
-                    if tagCounts.isEmpty {
-                        Text("No tagged feedback yet.").foregroundStyle(.secondary).padding()
-                    } else {
-                        Chart(tagCounts) { item in
-                            BarMark(x: .value("Month", item.month),
-                                    y: .value("Count", item.count))
-                            .foregroundStyle(by: .value("Tag", item.tag))
-                        }
-                        .frame(height: 240)
+            VStack(alignment: .leading, spacing: Spacing.l) {
+                VStack(alignment: .leading, spacing: Spacing.m) {
+                    SectionHeader(title: "Score dimensions over time") {
+                        Text(roundFilter?.displayName ?? "All rounds")
                     }
-                }
-
-                GroupBox("Score dimensions over time") {
                     if scorePoints.isEmpty {
                         Text("No scored sessions yet.").foregroundStyle(.secondary).padding()
                     } else {
@@ -73,8 +63,10 @@ struct TrendsView: View {
                                      y: .value("Score", p.score),
                                      series: .value("Dimension", p.dimension))
                             .foregroundStyle(by: .value("Dimension", p.dimension))
+                            .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             PointMark(x: .value("Date", p.date), y: .value("Score", p.score))
                                 .foregroundStyle(by: .value("Dimension", p.dimension))
+                                .symbolSize(24)
                         }
                         // Scores are a 1–5 forced choice; a 0 is not a bad score, it is not
                         // a score. Anchoring the axis at 0 spent a fifth of the plot on a
@@ -85,7 +77,10 @@ struct TrendsView: View {
                         // are validated on the way in — `decodeCoaching` enforces the range
                         // — so an out-of-range point means a decode bug, not a display one.
                         .chartYScale(domain: 1...5)
-                        .frame(height: 240)
+                        .chartYAxis { Self.subduedYAxis(values: .stride(by: 1)) }
+                        .chartXAxis { Self.subduedXAxis }
+                        .chartLegend(position: .bottom, alignment: .leading, spacing: Spacing.m)
+                        .frame(height: 260)
                         // Not a per-round split. Keying the series by dimension+round made
                         // this chart honest and unreadable at the same time: every base
                         // dimension multiplies by the number of round types, which on a real
@@ -100,18 +95,60 @@ struct TrendsView: View {
                         let mixed = Self.dimensionsSharedAcrossRounds(
                             in: scorePoints.map { ($0.dimension, $0.roundType) })
                         if roundFilter == nil, !mixed.isEmpty {
-                            Text("\(mixed.map { "`\($0)`" }.joined(separator: ", ")) "
+                            InlineMessage(text: "\(mixed.map { "`\($0)`" }.joined(separator: ", ")) "
                                  + "\(mixed.count == 1 ? "is scored by" : "are each scored by") "
                                  + "more than one round type, with different definitions, so "
                                  + "\(mixed.count == 1 ? "that line mixes" : "those lines mix") them. "
                                  + "Filter to a round type to compare like with like.")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .padding(.top, 4)
                         }
                     }
                 }
+                .card()
+
+                VStack(alignment: .leading, spacing: Spacing.m) {
+                    SectionHeader(title: "Focus areas per month") {
+                        // The tag chart is global — it does not follow the round filter.
+                        Text("All rounds")
+                    }
+                    if tagCounts.isEmpty {
+                        Text("No tagged feedback yet.").foregroundStyle(.secondary).padding()
+                    } else {
+                        Chart(tagCounts) { item in
+                            BarMark(x: .value("Month", item.month),
+                                    y: .value("Count", item.count),
+                                    width: .ratio(0.6))
+                            .foregroundStyle(by: .value("Tag", dimensionDisplayName(item.tag)))
+                            .cornerRadius(2)
+                        }
+                        .chartYAxis { Self.subduedYAxis(values: .automatic(desiredCount: 4)) }
+                        .chartXAxis {
+                            AxisMarks { _ in
+                                AxisValueLabel().foregroundStyle(.secondary)
+                            }
+                        }
+                        .chartLegend(position: .bottom, alignment: .leading, spacing: Spacing.m)
+                        .frame(height: 240)
+                    }
+                }
+                .card()
             }
-            .padding()
+            .padding(Spacing.xl)
+        }
+    }
+
+    /// Hairline gridlines and secondary labels: the data carries the colour, not the frame.
+    private static func subduedYAxis(values: AxisMarkValues) -> some AxisContent {
+        AxisMarks(position: .leading, values: values) { _ in
+            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                .foregroundStyle(.quaternary)
+            AxisValueLabel().foregroundStyle(.secondary)
+        }
+    }
+
+    private static var subduedXAxis: some AxisContent {
+        AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+            AxisTick(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(.quaternary)
+            AxisValueLabel(format: .dateTime.month(.abbreviated).day()).foregroundStyle(.secondary)
         }
     }
 

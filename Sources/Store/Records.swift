@@ -87,6 +87,18 @@ public struct Company: Codable, Identifiable, Equatable, Sendable, FetchableReco
         self.id = id; self.name = name; self.status = status
     }
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    /// The name finalize files a session under when the stop-form's company was left blank.
+    /// It is a real row (not NULL — `session.companyId` is NOT NULL), so every query that
+    /// means "a company you are interviewing with" must exclude it: Pipeline, the company
+    /// suggestions. Sessions still list these under this name so they can be reassigned.
+    public static let placeholderName = "Unknown"
+
+    /// True for the no-company placeholder, and for a blank name should one ever exist.
+    public var isPlaceholder: Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.caseInsensitiveCompare(Self.placeholderName) == .orderedSame
+    }
 }
 
 public struct InterviewSession: Codable, Identifiable, Equatable, Sendable, FetchableRecord, MutablePersistableRecord {

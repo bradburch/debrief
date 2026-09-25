@@ -50,24 +50,36 @@ struct PlannedCallEditor: View {
     @State private var roundTypes: [RoundType] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(draft.planId == nil ? "Plan a call" : "Edit planned call").font(.headline)
+        VStack(spacing: 0) {
             Form {
-                TextField("Company", text: $draft.companyName)
-                TextField("Role (optional)", text: $draft.role)
-                Picker("Round", selection: $draft.roundType) {
-                    ForEach(roundTypes, id: \.self) { Text($0.displayName).tag($0) }
+                Section {
+                    CompanyField(text: $draft.companyName)
+                    TextField("Role", text: $draft.role, prompt: Text("Optional"))
+                    Picker("Round", selection: $draft.roundType) {
+                        ForEach(roundTypes, id: \.self) { Text($0.displayName).tag($0) }
+                    }
+                    DatePicker("Scheduled", selection: $draft.scheduledDate)
+                    TextField("Notes", text: $draft.notes, prompt: Text("Optional"))
+                } header: {
+                    Text(draft.planId == nil ? "Plan a call" : "Edit planned call")
+                        .font(.headline)
                 }
-                DatePicker("Scheduled", selection: $draft.scheduledDate)
-                TextField("Notes (optional)", text: $draft.notes)
+                Section {
+                    TextEditor(text: $draft.customInstructions)
+                        .font(.callout)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 110)
+                        .accessibilityLabel("Grading criteria")
+                } header: {
+                    Text("Grading criteria")
+                } footer: {
+                    // Entered before the call, so it reaches the first debrief — not only a re-run.
+                    Text("A rubric or focus for this interview. Applied to its first debrief.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Text("Grading criteria").font(.subheadline)
-            TextEditor(text: $draft.customInstructions)
-                .font(.callout)
-                .frame(minWidth: 420, minHeight: 110)
-                .border(.separator)
-            Text("Paste a rubric or focus for this interview. Because it's entered before the call, it reaches the first debrief — not only a re-run.")
-                .font(.caption).foregroundStyle(.secondary)
+            .formStyle(.grouped)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -80,8 +92,10 @@ struct PlannedCallEditor: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!draft.isValid)
             }
+            .padding(Spacing.l)
         }
-        .padding()
+        .frame(width: 480)
+        .frame(minHeight: 520)
         .onAppear {
             roundTypes = env.prompts.availableRoundTypes()
             // The Picker binds by tag, so a draft carrying a type whose overlay was deleted
@@ -100,26 +114,37 @@ struct PlannedCallsSection: View {
     @EnvironmentObject var env: AppEnvironment
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
             // "Plan a call" used to live here as an icon button. It is a Sessions-level
             // action, so it moved to the window toolbar — leaving this an ordinary list
             // header, which is also what lets SessionsView hide the whole section when
             // there is nothing upcoming.
-            Text("Upcoming").font(.caption).bold().foregroundStyle(.secondary)
+            Text("Upcoming").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, Spacing.xxs)
             ForEach(env.plannedCalls) { plan in
                 Button { env.planningCall = PlannedCallDraft(plan) } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        // Text(verbatim:) so a company name containing "%" isn't parsed as a
-                        // format specifier by LocalizedStringKey.
-                        Text(verbatim: plan.companyName)
-                        Text("\(plan.roundType.displayName) · \(plan.scheduledDate.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: Spacing.s) {
+                        Image(systemName: "calendar")
+                            .foregroundStyle(.tint)
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: Spacing.xxs) {
+                            // Text(verbatim:) so a company name containing "%" isn't parsed as a
+                            // format specifier by LocalizedStringKey.
+                            Text(verbatim: plan.companyName).font(.callout.weight(.medium))
+                            Text("\(plan.roundType.displayName) · \(plan.scheduledDate.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, Spacing.xs)
+                    .padding(.horizontal, Spacing.s)
+                    .background(Color.cardBackground,
+                                in: RoundedRectangle(cornerRadius: Radius.small, style: .continuous))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("Edit this planned call")
                 .contextMenu {
                     Button { env.planningCall = PlannedCallDraft(plan) } label: {
                         Label("Edit…", systemImage: "pencil")
@@ -132,7 +157,8 @@ struct PlannedCallsSection: View {
                 }
             }
         }
-        .padding(8)
+        .padding(.horizontal, Spacing.m)
+        .padding(.vertical, Spacing.m)
         // The refresh lives on SessionsView, not here: this section is conditional on the
         // list being non-empty, so an `onAppear` of its own would never run in the one state
         // that needs it.

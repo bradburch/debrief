@@ -50,7 +50,28 @@ final class AppEnvironment: ObservableObject {
     /// cannot reliably present a sheet of its own — it opens the main window instead.
     @Published var planningCall: PlannedCallDraft?
 
-    func refreshPlannedCalls() { plannedCalls = (try? db.plannedCalls()) ?? [] }
+    func refreshPlannedCalls() {
+        plannedCalls = (try? db.plannedCalls()) ?? []
+        refreshCompanies()
+    }
+
+    /// Every company name a `CompanyField` offers: recorded companies ranked active-first
+    /// (Store's `companySuggestions`), then planned-call companies not yet recorded. The one
+    /// source for all completion surfaces. Refreshed with the planned calls, after every
+    /// finalize, and by views that rename, delete, or change a company's status.
+    @Published private(set) var companySuggestions: [String] = []
+
+    func refreshCompanies() {
+        companySuggestions = CompanyNames.merge(recorded: (try? db.companySuggestions()) ?? [],
+                                                planned: plannedCalls.map(\.companyName))
+    }
+
+    /// What to store for a typed company name — see `CompanyNames.canonical`. Every write
+    /// path (stop, recovery, plan save, session rename) goes through it, so a differently
+    /// cased spelling never splits a pipeline even when no suggestion was picked.
+    func canonicalCompany(_ typed: String, current: String? = nil) -> String {
+        CompanyNames.canonical(typed, in: companySuggestions, current: current)
+    }
 
     /// Creates or updates a planned call from the sheet's draft, then refreshes the list.
     ///
@@ -60,7 +81,8 @@ final class AppEnvironment: ObservableObject {
     /// typed, so the draft is re-inserted as a new plan instead: a duplicate row is trivially
     /// deletable, lost typing is not recoverable.
     func savePlannedCall(_ draft: PlannedCallDraft) {
-        let plan = draft.plannedCall
+        var plan = draft.plannedCall
+        plan.companyName = canonicalCompany(plan.companyName)
         do {
             if try plan.id == nil || !db.updatePlannedCall(plan) {
                 var fresh = plan
@@ -161,7 +183,12 @@ final class AppEnvironment: ObservableObject {
     /// scratch, so the selection can't simply be handed to a live instance.
     @Published var sessionToReveal: Int64?
 
-    /// Jump to a session from anywhere (currently the Pipeline's round cells).
+    /// Pipeline's navigation stack (the company overview drill-in). Here rather than view
+    /// @State because MainWindow's tab `switch` destroys PipelineView: an overview row jumps
+    /// to Sessions, and coming back should land on the same company, not the top list.
+    @Published var pipelinePath: [CompanyRoute] = []
+
+    /// Jump to a session from anywhere (the Pipeline's round cells and company overview).
     func revealSession(_ id: Int64) {
         sessionToReveal = id
         selectedTab = .sessions
@@ -257,7 +284,8 @@ final class AppEnvironment: ObservableObject {
     /// and typed into during that window. Clearing afterwards wiped the company the user had
     /// just entered for the new recording.
     func stopAndDebrief() async {
-        let name = recordCompany.isEmpty ? "Unknown" : recordCompany
+        let typed = canonicalCompany(recordCompany)
+        let name = typed.isEmpty ? Company.placeholderName : typed
         let metadata = SessionMetadata(company: name, roundType: recordRoundType,
                                        notes: recordNotes, customInstructions: recordCriteria)
         // Read with the rest of the form and cleared before the await, for the same reason:
@@ -363,7 +391,10 @@ final class AppEnvironment: ObservableObject {
         // the dir as active and drop it. A failed finalize would then keep telling the user to
         // discard its audio from a recovery prompt that no longer lists it.
         coordinator.$finalizeCompletions.dropFirst().receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refreshRecoverables() }.store(in: &cancellables)
+            .sink { [weak self] _ in
+                self?.refreshRecoverables()
+                self?.refreshCompanies()   // a finalize may have created a company
+            }.store(in: &cancellables)
         // Launch-time reclaim of debriefs whose process died mid-call. `running` is excluded
         // from every sweep, so without this they would never be retried. Safe here because
         // nothing in this process can be coaching yet.

@@ -55,7 +55,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Coaching model") {
+            Section {
                 Picker("Provider", selection: $provider) {
                     Text("Claude API (recommended)").tag("anthropic")
                     Text("Claude subscription (Claude Code CLI)").tag("claude_cli")
@@ -66,97 +66,114 @@ struct SettingsView: View {
                 if provider == "claude_cli" {
                     claudeCLISettings
                 } else if provider == "anthropic" {
-                    if apiKey.isEmpty && !envAPIKeyPresent {
-                        Label("No API key configured — debriefs will not run.", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                    } else if apiKey.isEmpty && envAPIKeyPresent {
-                        Text("Using ANTHROPIC_API_KEY from environment.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    SecureField("API key (sk-ant-…)", text: $apiKey)
-                    HStack {
-                        Button("Save") {
-                            do {
-                                if apiKey.isEmpty {
-                                    try SecretStore.delete(key: "anthropic-api-key")
-                                } else {
-                                    try SecretStore.save(key: "anthropic-api-key", value: apiKey)
+                    LabeledContent("API key") {
+                        HStack(spacing: Spacing.s) {
+                            SecureField("API key", text: $apiKey, prompt: Text("sk-ant-…"))
+                                .labelsHidden()
+                            Button("Save") {
+                                do {
+                                    if apiKey.isEmpty {
+                                        try SecretStore.delete(key: "anthropic-api-key")
+                                    } else {
+                                        try SecretStore.save(key: "anthropic-api-key", value: apiKey)
+                                    }
+                                    env.rebuildCoaching()
+                                    saved = true
+                                    saveError = nil
+                                } catch {
+                                    saveError = "Could not save key: \(error.localizedDescription)"
+                                    saved = false
                                 }
-                                env.rebuildCoaching()
-                                saved = true
-                                saveError = nil
-                            } catch {
-                                saveError = "Could not save key: \(error.localizedDescription)"
-                                saved = false
-                            }
-                        }.disabled(!apiKey.isEmpty && !apiKey.hasPrefix("sk-ant-"))
-                        if saved { Text("Saved ✓").foregroundStyle(.green) }
-                        if let saveError { Text(saveError).foregroundStyle(.red) }
+                            }.disabled(!apiKey.isEmpty && !apiKey.hasPrefix("sk-ant-"))
+                        }
                     }
+                    if apiKey.isEmpty && !envAPIKeyPresent {
+                        InlineMessage(text: "No API key configured — debriefs will not run.", kind: .warning)
+                    } else if apiKey.isEmpty && envAPIKeyPresent {
+                        InlineMessage(text: "Using ANTHROPIC_API_KEY from the environment.")
+                    }
+                    saveStatus
                     Picker("Model", selection: $model) {
                         ForEach(modelOptions, id: \.id) { Text($0.label).tag($0.id) }
                     }
                     .onChange(of: model) { env.rebuildCoaching() }
-                    Text("Which Claude model generates debriefs. Applies to the next (re)generate.")
-                        .font(.caption).foregroundStyle(.secondary)
                 } else {
                     TextField("Base URL", text: $compatBaseURL, prompt: Text("http://localhost:11434/v1"))
                         .onChange(of: compatBaseURL) { env.rebuildCoaching() }
                     TextField("Model", text: $compatModel, prompt: Text("e.g. deepseek-r1:14b"))
                         .onChange(of: compatModel) { env.rebuildCoaching() }
-                    SecureField("API key (optional, for remote providers)", text: $compatKey)
-                    Button("Save key") {
-                        do {
-                            if compatKey.isEmpty {
-                                try SecretStore.delete(key: "openai-compat-api-key")
-                            } else {
-                                try SecretStore.save(key: "openai-compat-api-key", value: compatKey)
+                    LabeledContent("API key") {
+                        HStack(spacing: Spacing.s) {
+                            SecureField("API key", text: $compatKey, prompt: Text("Optional, for remote providers"))
+                                .labelsHidden()
+                            Button("Save key") {
+                                do {
+                                    if compatKey.isEmpty {
+                                        try SecretStore.delete(key: "openai-compat-api-key")
+                                    } else {
+                                        try SecretStore.save(key: "openai-compat-api-key", value: compatKey)
+                                    }
+                                    env.rebuildCoaching()
+                                    saved = true; saveError = nil
+                                } catch {
+                                    saveError = "Could not save key: \(error.localizedDescription)"; saved = false
+                                }
                             }
-                            env.rebuildCoaching()
-                            saved = true; saveError = nil
-                        } catch {
-                            saveError = "Could not save key: \(error.localizedDescription)"; saved = false
                         }
                     }
-                    if saved { Text("Saved ✓").foregroundStyle(.green) }
-                    if let saveError { Text(saveError).foregroundStyle(.red) }
-                    Text("Works with Ollama, LM Studio, or any /v1/chat/completions server. See docs/local-llm.md for setup. Local models give weaker coaching than Claude.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    saveStatus
                 }
+            } header: {
+                Text("Coaching model")
+            } footer: {
+                footer(providerFooter)
             }
-            Section("Audio") {
+
+            Section {
                 Toggle("Keep raw audio after transcription", isOn: $keepAudio)
-                Text("Takes effect after relaunching Debrief.").font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Audio")
+            } footer: {
+                footer("Takes effect after relaunching Debrief.")
             }
-            Section("Coaching") {
+
+            Section {
                 // Disabled while a finalize job is running: that job's own debrief is part of
                 // what "pending" means until it lands, and a sweep started now would report a
                 // confusing count for work already in flight. Gated on a re-run too, and for
                 // the same reason the re-run is gated on this one: whichever sweep gets there
                 // second hits `coach()`'s claim and bails, then reports the session as handled
                 // when nothing of its own ran.
-                Button("Retry pending debriefs") {
-                    Task {
-                        let errors = await env.coaching.retryAllPending()
-                        retryResult = errors.isEmpty ? "All caught up." : "\(errors.count) failed — see sessions list."
+                LabeledContent {
+                    Button("Retry pending debriefs") {
+                        Task {
+                            let errors = await env.coaching.retryAllPending()
+                            retryResult = errors.isEmpty ? "All caught up." : "\(errors.count) failed — see sessions list."
+                        }
+                    }
+                    .disabled(env.coordinator.hasActiveJobs || env.isRecoaching)
+                } label: {
+                    Text("Pending debriefs")
+                    if env.coordinator.hasActiveJobs || env.isRecoaching {
+                        Text(env.isRecoaching
+                             ? "Re-running debriefs — try again when that finishes."
+                             : "Finishing a debrief — try again in a moment.")
+                    } else if let retryResult {
+                        Text(retryResult)
                     }
                 }
-                .disabled(env.coordinator.hasActiveJobs || env.isRecoaching)
-                if env.coordinator.hasActiveJobs || env.isRecoaching {
-                    Text(env.isRecoaching
-                         ? "Re-running debriefs — try again when that finishes."
-                         : "Finishing a debrief — try again in a moment.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if let retryResult { Text(retryResult).font(.caption) }
-                HStack {
-                    // Also gated on live jobs: a sweep started now would reach a session whose
-                    // finalize is coaching it, and `coach()` would (correctly) bail on it —
-                    // reporting it as done on the current rubric when it hasn't been re-run.
-                    Button("Re-run debriefs on current rubric") { confirmingRecoach = true }
-                        .disabled(env.isRecoaching || env.coordinator.hasActiveJobs)
-                    if env.isRecoaching { Button("Stop") { env.cancelRecoach() } }
+                LabeledContent {
+                    HStack(spacing: Spacing.s) {
+                        if env.isRecoaching { Button("Stop") { env.cancelRecoach() } }
+                        // Also gated on live jobs: a sweep started now would reach a session whose
+                        // finalize is coaching it, and `coach()` would (correctly) bail on it —
+                        // reporting it as done on the current rubric when it hasn't been re-run.
+                        Button("Re-run debriefs on current rubric") { confirmingRecoach = true }
+                            .disabled(env.isRecoaching || env.coordinator.hasActiveJobs)
+                    }
+                } label: {
+                    Text("Re-run all debriefs")
+                    Text("One API call per session (~30s each). Replaces existing debrief text.")
                 }
                 if let progress = env.recoachProgress {
                     // Determinate: the total is known before the first call, and each session
@@ -176,43 +193,55 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(outcome.isProblem ? Color.orange : Color.green)
                 }
-                Text("Re-coaches every past session so old debriefs use the current prompts and get an advancement verdict. Costs one API call per session (~30s each) and replaces existing debrief text.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("Open prompts folder") {
-                    NSWorkspace.shared.open(PromptStore.defaultDirectory())
+                LabeledContent("Prompts") {
+                    Button("Open prompts folder") {
+                        NSWorkspace.shared.open(PromptStore.defaultDirectory())
+                    }
                 }
+            } header: {
+                Text("Coaching")
+            } footer: {
+                footer("Re-running brings old debriefs onto the current prompts, so they gain an advancement verdict and compare fairly with new ones.")
             }
+
             InterviewTypesSection()
-            Section("Cowork export") {
-                Text(exportDir.isEmpty
-                     ? "Off — choose a folder to write each debrief as a markdown file Claude Cowork can read."
-                     : "Exporting to: \(exportDir)")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Choose export folder…") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseDirectories = true
-                        panel.canChooseFiles = false
-                        panel.allowsMultipleSelection = false
-                        if panel.runModal() == .OK, let url = panel.url {
-                            exportDir = url.path
-                            env.exportAllSessions(to: url)  // backfill existing sessions immediately
+
+            Section {
+                LabeledContent {
+                    HStack(spacing: Spacing.s) {
+                        if !exportDir.isEmpty {
+                            Button("Turn off") { exportDir = "" }
+                            Button("Export all now") {
+                                env.exportAllSessions(to: URL(fileURLWithPath: exportDir))
+                            }
+                        }
+                        Button("Choose export folder…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            panel.allowsMultipleSelection = false
+                            if panel.runModal() == .OK, let url = panel.url {
+                                exportDir = url.path
+                                env.exportAllSessions(to: url)  // backfill existing sessions immediately
+                            }
                         }
                     }
-                    if !exportDir.isEmpty {
-                        Button("Turn off") { exportDir = "" }
-                        Button("Export all now") {
-                            env.exportAllSessions(to: URL(fileURLWithPath: exportDir))
-                        }
-                    }
+                } label: {
+                    Text("Export folder")
+                    Text(exportDir.isEmpty ? "Off" : exportDir)
+                        .truncationMode(.middle)
                 }
                 if let exportResult = env.exportResult {
                     Text(exportResult).font(.caption).foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("Cowork export")
+            } footer: {
+                footer("Writes each debrief as a markdown file Claude Cowork can read.")
             }
-            Section("Calendar pre-fill") {
-                Text("Status: \(authorizationStatusText(calendarAuthStatus))")
-                    .font(.caption).foregroundStyle(.secondary)
+
+            Section {
+                LabeledContent("Calendar access", value: authorizationStatusText(calendarAuthStatus))
                 if calendarAuthStatus == .fullAccess {
                     if calendars.isEmpty {
                         Text("No calendars found on this Mac.")
@@ -231,45 +260,52 @@ struct SettingsView: View {
                         }
                     }
                 } else if calendarAuthStatus == .notDetermined || calendarAuthStatus == .writeOnly {
-                    Button("Grant calendar access") {
-                        Task {
-                            _ = await CalendarEvents.shared.requestAccess()
-                            refreshCalendarSection()
+                    LabeledContent {
+                        Button("Grant calendar access") {
+                            Task {
+                                _ = await CalendarEvents.shared.requestAccess()
+                                refreshCalendarSection()
+                            }
                         }
+                    } label: {
+                        Text("Access")
+                        Text("macOS lists every calendar on this Mac, including Google accounts added in System Settings.")
                     }
-                    Text("macOS will show its own permission prompt, listing every calendar on this Mac — including a Google account added in System Settings.")
-                        .font(.caption).foregroundStyle(.secondary)
                 } else {
                     // .denied or .restricted: requestFullAccessToEvents() returns false
                     // without prompting once the user has already said no, so "Grant
                     // calendar access" would be a silent no-op here. Send them to System
                     // Settings instead, same idiom as Microphone/Screen Recording below.
-                    Button("Open Calendar settings") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!)
+                    LabeledContent {
+                        Button("Open Calendar settings") {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!)
+                        }
+                    } label: {
+                        Text("Access denied")
+                        Text("Enable it in System Settings, then click Refresh.")
                     }
-                    Text("Calendar access was denied. Enable it in System Settings, then click Refresh below.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Debrief reads the calendar locally through macOS Calendar. It never contacts Google or any other calendar service — no network call, no OAuth, no tokens.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Divider()
-                Text("upcoming.json still works as a fallback — used when no calendar above is selected, or when the selected calendar simply has no upcoming interviews right now — handy if the account you interview from isn't added to macOS Calendar.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(calendarStatusText)
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(UpcomingInterviews.fileURL().path)
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Reveal in Finder") { revealCalendarFile() }
-                    Button("Refresh") { refreshCalendarSection() }
+                LabeledContent {
+                    HStack(spacing: Spacing.s) {
+                        Button("Reveal in Finder") { revealCalendarFile() }
+                        Button("Refresh") { refreshCalendarSection() }
+                    }
+                } label: {
+                    Text("upcoming.json fallback")
+                    Text(calendarStatusText)
                 }
+                .help(UpcomingInterviews.fileURL().path)
+            } header: {
+                Text("Calendar pre-fill")
+            } footer: {
+                // The privacy claim stays visible: it is the reason this section is safe to use.
+                footer("Read locally through macOS Calendar — no network call, no OAuth, no tokens. "
+                       + "upcoming.json is used when no calendar is selected or it has nothing upcoming.")
             }
-            Section("Data locations") {
-                Text("Where Debrief stores its files. Changing a location moves the existing data and relaunches Debrief.")
-                    .font(.caption).foregroundStyle(.secondary)
+
+            Section {
                 if !canRelocate {
-                    Text("Finish or stop any recording and re-coaching before changing these — the move happens on relaunch.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    InlineMessage(text: "Finish or stop any recording and re-coaching before changing these — the move happens on relaunch.")
                 }
                 locationRow("Recordings", desiredKey: "audioDirDesired", actualKey: "audioDirActual",
                             errorKey: "audioDirError", subdir: "recordings",
@@ -281,22 +317,36 @@ struct SettingsView: View {
                             errorKey: "promptsDirError", subdir: "prompts",
                             defaultPath: PromptStore.defaultDirectory().path)
                 if let relaunchError {
-                    Label(relaunchError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    InlineMessage(text: relaunchError, kind: .warning)
                 }
+            } header: {
+                Text("Data locations")
+            } footer: {
+                footer("Changing a location moves the existing data and relaunches Debrief.")
             }
-            Section("Permissions") {
-                Text("Debrief needs Microphone (your voice) and Screen Recording (the other side's audio). Grant them to the terminal/app you launch Debrief from.")
-                    .font(.caption)
-                Button("Open Microphone settings") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+
+            Section {
+                LabeledContent {
+                    Button("Open Microphone settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+                    }
+                } label: {
+                    Text("Microphone")
+                    Text("Your side of the call")
                 }
-                Button("Open Screen Recording settings") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                LabeledContent {
+                    Button("Open Screen Recording settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    }
+                } label: {
+                    Text("System audio")
+                    Text("The other side of the call")
                 }
+            } header: {
+                Text("Permissions")
             }
         }
         .formStyle(.grouped)
-        .padding()
         .onAppear(perform: refreshCalendarSection)
         .confirmationDialog("Re-run every past debrief?", isPresented: $confirmingRecoach) {
             Button("Re-run all", role: .destructive) { env.startRecoach() }
@@ -344,22 +394,47 @@ struct SettingsView: View {
     private var claudeCLISettings: some View {
         let located = ClaudeCodeCLIClient.locate(extraPath: claudeCLIPath)
         if let located {
-            Label("Using \(located.path)", systemImage: "checkmark.circle")
-                .font(.caption).foregroundStyle(.green)
+            InlineMessage(text: "Using \(located.path)")
         } else {
-            Label("Claude Code CLI not found — debriefs fall back to the Claude API (needs a key).",
-                  systemImage: "exclamationmark.triangle")
-                .font(.caption).foregroundStyle(.orange)
+            InlineMessage(text: "Claude Code CLI not found — debriefs fall back to the Claude API (needs a key).",
+                          kind: .warning)
         }
-        TextField("CLI path (optional)", text: $claudeCLIPath,
+        TextField("CLI path", text: $claudeCLIPath,
                   prompt: Text("~/.local/bin/claude"))
             .onChange(of: claudeCLIPath) { env.rebuildCoaching() }
         TextField("Model", text: $claudeCLIModel, prompt: Text("claude-opus-5"))
             .onChange(of: claudeCLIModel) { env.rebuildCoaching() }
-        Text("Runs debriefs through the Claude Code CLI, billed against your Claude subscription instead of an API key. Requires the CLI installed and signed in.")
-            .font(.caption).foregroundStyle(.secondary)
-        Text("Tradeoffs: each debrief carries roughly 15–20k extra tokens of the CLI's own prompt, subscription rate limits can throttle \"Re-run debriefs on current rubric\", and there's no JSON schema — the response contract is enforced by prompt and a key check, as with local models. Claude Code is a coding tool, so this path isn't a supported integration and a CLI update could break it.")
-            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    /// Per-provider footer copy. The honest tradeoffs of the CLI path are stated where it's
+    /// chosen rather than buried in docs: it is measurably more expensive per debrief in
+    /// tokens and is not a supported integration.
+    private var providerFooter: String {
+        switch provider {
+        case "claude_cli":
+            return "Bills your Claude subscription instead of an API key; needs the CLI installed and signed in. "
+                + "Each debrief carries ~15–20k extra tokens, rate limits can throttle re-runs, there's no JSON "
+                + "schema, and a CLI update could break it — this isn't a supported integration."
+        case "anthropic":
+            return "The model applies to the next debrief you generate."
+        default:
+            return "Works with Ollama, LM Studio, or any /v1/chat/completions server (see docs/local-llm.md). "
+                + "Local models give weaker coaching than Claude."
+        }
+    }
+
+    private func footer(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var saveStatus: some View {
+        if saved {
+            Label("Saved", systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.green)
+        }
+        if let saveError { InlineMessage(text: saveError, kind: .error) }
     }
 
     private func refreshCalendarSection() {
@@ -414,29 +489,27 @@ struct SettingsView: View {
         let current = d.string(forKey: actualKey) ?? defaultPath
         let err = d.string(forKey: errorKey)
         let desired = d.string(forKey: desiredKey)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title).bold()
-                Spacer()
-                Button("Change…") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseDirectories = true; panel.canChooseFiles = false
-                    panel.allowsMultipleSelection = false
-                    panel.message = "Choose a parent folder — Debrief will keep a “\(subdir)” folder inside it."
-                    guard panel.runModal() == .OK, let parent = panel.url else { return }
-                    let picked = parent.appendingPathComponent(subdir).path
-                    guard picked != current else { return }
-                    d.set(picked, forKey: desiredKey)
-                    relaunchPrompt = RelaunchPrompt(dir: title)
-                }
-                .disabled(!canRelocate)
+        return LabeledContent {
+            Button("Change…") {
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = true; panel.canChooseFiles = false
+                panel.allowsMultipleSelection = false
+                panel.message = "Choose a parent folder — Debrief will keep a “\(subdir)” folder inside it."
+                guard panel.runModal() == .OK, let parent = panel.url else { return }
+                let picked = parent.appendingPathComponent(subdir).path
+                guard picked != current else { return }
+                d.set(picked, forKey: desiredKey)
+                relaunchPrompt = RelaunchPrompt(dir: title)
             }
-            Text(current).font(.caption).foregroundStyle(.secondary)
+            .disabled(!canRelocate)
+        } label: {
+            Text(title)
+            Text(current).truncationMode(.middle).textSelection(.enabled)
             if let desired, desired != current, err == nil {
-                Text("Pending after relaunch: \(desired)").font(.caption).foregroundStyle(.secondary)
+                Text("Pending after relaunch: \(desired)")
             }
             if let err {
-                Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             }
         }
     }

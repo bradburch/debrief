@@ -132,6 +132,8 @@ final class LevelMonitorTests: XCTestCase {
         XCTAssertEqual(coordinator.micLevel, 0)
         XCTAssertEqual(coordinator.systemLevel, 0)
 
+        // Past the 10Hz level throttle, so only the generation guard can reject this.
+        try await Task.sleep(nanoseconds: 150_000_000)
         // A buffer that was already in flight when the popover closed.
         opened[0].onLevel?(0.7)
         try await Task.sleep(nanoseconds: 50_000_000)

@@ -12,6 +12,8 @@ public struct SessionSummary: Equatable, Sendable, Identifiable {
     public let id: Int64; public let roundType: RoundType; public let date: Date; public let overallScore: Double?
     /// nil for a debrief written before the verdict existed, or not yet coached.
     public let advancement: Advancement?
+    public let durationSeconds: Int
+    public let coachingStatus: CoachingStatus
 }
 public struct CompanyPipeline: Equatable, Sendable, Identifiable {
     public var id: Int64 { company.id ?? 0 }
@@ -26,6 +28,21 @@ public struct CompanyPipeline: Equatable, Sendable, Identifiable {
             && a.processNotesJSON.map(\.json) == b.processNotesJSON.map(\.json)
     }
 }
+/// Everything the Pipeline's per-company overview shows, in one read.
+public struct CompanyOverview: Sendable {
+    public let company: Company
+    /// Oldest first — the order the rounds happened in.
+    public let sessions: [SessionSummary]
+    /// Same shape and order as `CompanyPipeline.processNotesJSON`: newest round first.
+    public let processNotesJSON: [(roundType: RoundType, date: Date, json: String)]
+    /// Each coached round's action items as raw `[String]` JSON, newest round first. Raw for
+    /// symmetry with the process notes; empty and "[]" rows are already dropped.
+    public let actionItemsJSON: [(roundType: RoundType, date: Date, json: String)]
+    /// Weakness tags across this company's rounds, most frequent first — "recurring" is
+    /// the caller's call (count > 1), since one round is the common case.
+    public let weaknessTags: [(tag: String, count: Int)]
+}
+
 public struct SessionDetail: Sendable {
     public let session: InterviewSession
     public let company: Company
@@ -98,7 +115,18 @@ extension AppDatabase {
             }
             try db.execute(sql: "UPDATE session SET companyId = ? WHERE id = ?",
                            arguments: [company.id, sessionId])
+            // The old company row is kept even if now empty: deleting it would lose its
+            // status. Pipeline hides zero-session companies and suggestions skip them.
             return company
+        }
+    }
+
+    /// Re-spells a company in place — every session and its status come along. Used for a
+    /// case-only fix ("acme" → "Acme"), which `renameSession` would instead split in two.
+    public func renameCompany(id: Int64, to name: String) throws -> Company {
+        try dbWriter.write { db in
+            try db.execute(sql: "UPDATE company SET name = ? WHERE id = ?", arguments: [name, id])
+            return try Company.fetchOne(db, key: id)!
         }
     }
 
@@ -397,29 +425,54 @@ extension AppDatabase {
         }
     }
 
+    /// One company's rounds joined to their feedback, oldest first. Shared by `pipeline` and
+    /// `companyOverview` so the two can't disagree about what a round is.
+    private static func companySessionRows(_ db: Database, companyId: Int64?) throws -> [Row] {
+        try Row.fetchAll(db, sql: """
+            SELECT s.id AS id, s.roundType AS roundType, s.date AS date,
+                   s.durationSeconds AS durationSeconds, s.coachingStatus AS coachingStatus,
+                   f.overallScore AS overallScore, f.advancement AS advancement,
+                   f.processNotesJSON AS processNotesJSON, f.actionItemsJSON AS actionItemsJSON
+            FROM session s LEFT JOIN feedback f ON f.sessionId = s.id
+            WHERE s.companyId = ? ORDER BY s.date
+            """, arguments: [companyId])
+    }
+
+    private static func summary(_ row: Row) -> SessionSummary {
+        SessionSummary(id: row["id"], roundType: RoundType(rawValue: row["roundType"]),
+                       date: row["date"], overallScore: row["overallScore"],
+                       advancement: (row["advancement"] as String?).flatMap(Advancement.init),
+                       durationSeconds: row["durationSeconds"],
+                       coachingStatus: CoachingStatus(rawValue: row["coachingStatus"]) ?? .pending)
+    }
+
+    /// Newest round first: the latest thing said is the one that still applies. "[]" and NULL
+    /// (uncoached session) both mean nothing to show.
+    private static func jsonListsNewestFirst(_ rows: [Row], column: String)
+        -> [(roundType: RoundType, date: Date, json: String)] {
+        rows.reversed().compactMap { row in
+            guard let json: String = row[column], json != "[]", !json.isEmpty else { return nil }
+            return (RoundType(rawValue: row["roundType"]), row["date"], json)
+        }
+    }
+
+    /// SQL twin of `Company.isPlaceholder`, for queries that filter in the database.
+    private static let isRealCompanySQL = "trim(name) != '' AND lower(trim(name)) != lower('\(Company.placeholderName)')"
+
+    /// Companies you are interviewing with. **Excludes the "Unknown" placeholder** that
+    /// finalize files a blank-company session under: it is a real row, but a bucket of
+    /// unrelated interviews is not a pipeline. Those sessions are counted by
+    /// `unassignedSessionCount` instead and stay visible in Sessions.
+    ///
+    /// Callers: PipelineView only (plus tests). Trends and the Sessions list do not group by
+    /// company, so the exclusion reaches nothing else.
     public func pipeline() throws -> [CompanyPipeline] {
         try dbWriter.read { db in
-            let companies = try Company.order(Column("name")).fetchAll(db)
+            let companies = try Company.filter(sql: Self.isRealCompanySQL).order(Column("name")).fetchAll(db)
             return try companies.map { co in
-                let rows = try Row.fetchAll(db, sql: """
-                    SELECT s.id AS id, s.roundType AS roundType, s.date AS date,
-                           f.overallScore AS overallScore, f.advancement AS advancement,
-                           f.processNotesJSON AS processNotesJSON
-                    FROM session s LEFT JOIN feedback f ON f.sessionId = s.id
-                    WHERE s.companyId = ? ORDER BY s.date
-                    """, arguments: [co.id])
-                let sessions = rows.map { row in
-                    SessionSummary(id: row["id"], roundType: RoundType(rawValue: row["roundType"]),
-                                   date: row["date"], overallScore: row["overallScore"],
-                                   advancement: (row["advancement"] as String?).flatMap(Advancement.init))
-                }
-                // Newest round first: the latest thing said about the process is the one that
-                // still applies. "[]" and NULL (uncoached session) both mean nothing to show.
-                let notes = rows.reversed().compactMap { row -> (RoundType, Date, String)? in
-                    guard let json: String = row["processNotesJSON"], json != "[]", !json.isEmpty else { return nil }
-                    return (RoundType(rawValue: row["roundType"]), row["date"], json)
-                }
-                return CompanyPipeline(company: co, sessions: sessions, processNotesJSON: notes)
+                let rows = try Self.companySessionRows(db, companyId: co.id)
+                return CompanyPipeline(company: co, sessions: rows.map(Self.summary),
+                                       processNotesJSON: Self.jsonListsNewestFirst(rows, column: "processNotesJSON"))
             }
             // Live pipelines lead, dead ones sink; within a status the most recently
             // interviewed company comes first. Stable over the name order above for ties.
@@ -428,6 +481,51 @@ extension AppDatabase {
                 if ra != rb { return ra < rb }
                 return (a.sessions.last?.date ?? .distantPast) > (b.sessions.last?.date ?? .distantPast)
             }
+        }
+    }
+
+    /// Sessions filed under the no-company placeholder — the ones Pipeline leaves out.
+    public func unassignedSessionCount() throws -> Int {
+        try dbWriter.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM session
+                WHERE companyId NOT IN (SELECT id FROM company WHERE \(Self.isRealCompanySQL))
+                """) ?? 0
+        }
+    }
+
+    /// Company names to offer while typing one: every real company with at least one
+    /// session, live pipelines first (then offers, then dead), most recently interviewed
+    /// first within a status. Never the placeholder — suggesting "Unknown" would file a
+    /// session under the no-company bucket on purpose.
+    public func companySuggestions() throws -> [String] {
+        try dbWriter.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT c.name FROM company c JOIN session s ON s.companyId = c.id
+                WHERE trim(c.name) != '' AND lower(trim(c.name)) != lower(?)
+                GROUP BY c.id
+                ORDER BY CASE c.status WHEN 'active' THEN 0 WHEN 'offer' THEN 1 ELSE 2 END,
+                         MAX(s.date) DESC, c.name
+                """, arguments: [Company.placeholderName])
+        }
+    }
+
+    /// The Pipeline drill-in: one company's rounds, notes, action items and weakness tags.
+    /// nil if the company is gone.
+    public func companyOverview(id: Int64) throws -> CompanyOverview? {
+        try dbWriter.read { db in
+            guard let company = try Company.fetchOne(db, key: id) else { return nil }
+            let rows = try Self.companySessionRows(db, companyId: id)
+            let tags = try Row.fetchAll(db, sql: """
+                SELECT w.tag AS tag, COUNT(*) AS n FROM weaknessTag w
+                JOIN session s ON s.id = w.sessionId
+                WHERE s.companyId = ?
+                GROUP BY w.tag ORDER BY n DESC, w.tag
+                """, arguments: [id]).map { (tag: $0["tag"] as String, count: $0["n"] as Int) }
+            return CompanyOverview(company: company, sessions: rows.map(Self.summary),
+                                   processNotesJSON: Self.jsonListsNewestFirst(rows, column: "processNotesJSON"),
+                                   actionItemsJSON: Self.jsonListsNewestFirst(rows, column: "actionItemsJSON"),
+                                   weaknessTags: tags)
         }
     }
 

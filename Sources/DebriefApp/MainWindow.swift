@@ -1,24 +1,7 @@
 import SwiftUI
 import Store
 
-extension Color {
-    /// Debrief's score-quality scale, shared by the Sessions list and Pipeline cells.
-    static func forScore(_ score: Double) -> Color {
-        score >= 3.5 ? .green : score >= 2.5 ? .orange : .red
-    }
-
-    /// The verdict's scale. Distinct from forScore because this is an ordinal call, not a
-    /// threshold on a number — the two leans are deliberately different shades so a
-    /// borderline result never reads as a clean pass or a clean reject.
-    static func forAdvancement(_ a: Advancement) -> Color {
-        switch a {
-        case .strongYes: return .green
-        case .leanYes: return .mint
-        case .leanNo: return .orange
-        case .strongNo: return .red
-        }
-    }
-}
+// `Color.forScore` / `forAdvancement` live in DesignSystem.swift with the rest of the palette.
 
 enum MainTab: String, CaseIterable {
     case sessions = "Sessions", pipeline = "Pipeline", trends = "Trends", settings = "Settings"
@@ -42,7 +25,8 @@ struct MainWindow: View {
             List(MainTab.allCases, id: \.self, selection: $env.selectedTab) { t in
                 Label(t.rawValue, systemImage: t.symbol).tag(t)
             }
-            .navigationSplitViewColumnWidth(180)
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
             VStack(spacing: 0) {
                 RecordingBar()
@@ -74,20 +58,23 @@ struct RecoachBar: View {
 
     var body: some View {
         if let progress = env.recoachProgress {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text(progress.total == 0
-                     ? "Re-coaching debriefs…"
-                     : "Re-coaching debrief \(min(progress.done + 1, progress.total)) of \(progress.total)…")
-                    .font(.caption)
-                if progress.total > 0 {
-                    ProgressView(value: Double(progress.done), total: Double(progress.total))
-                        .progressViewStyle(.linear).frame(maxWidth: 160)
+            VStack(spacing: 0) {
+                HStack(spacing: Spacing.m) {
+                    ProgressView().controlSize(.small)
+                    Text(progress.total == 0
+                         ? "Re-coaching debriefs…"
+                         : "Re-coaching debrief \(min(progress.done + 1, progress.total)) of \(progress.total)…")
+                        .font(.callout)
+                    if progress.total > 0 {
+                        ProgressView(value: Double(progress.done), total: Double(progress.total))
+                            .progressViewStyle(.linear).controlSize(.small).frame(maxWidth: 180)
+                    }
+                    Spacer()
+                    Button("Stop") { env.cancelRecoach() }.controlSize(.small)
                 }
-                Spacer()
-                Button("Stop") { env.cancelRecoach() }.controlSize(.small)
+                .padding(.horizontal, Spacing.l).padding(.vertical, Spacing.s)
+                Divider()
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
             .background(.bar)
         }
     }
@@ -102,20 +89,21 @@ struct RecordingToolbarItems: ToolbarContent {
     var body: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             if case .recording(let started) = env.coordinator.recordingPhase {
-                Label {
-                    Text(started, style: .timer).monospacedDigit()
-                } icon: {
-                    Image(systemName: "record.circle.fill")
+                HStack(spacing: Spacing.m) {
+                    HStack(spacing: Spacing.xs) {
+                        Image(systemName: "record.circle.fill").symbolEffect(.pulse)
+                        Text(started, style: .timer).monospacedDigit()
+                    }
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .help("Recording — stop it from the bar below")
+                    ToolbarMeter(label: "You", level: env.coordinator.micLevel)
+                    ToolbarMeter(label: "Them", level: env.coordinator.systemLevel)
                 }
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(.red)
-                .help("Recording — stop it from the bar below")
-                ToolbarMeter(label: "You", level: env.coordinator.micLevel)
-                ToolbarMeter(label: "Them", level: env.coordinator.systemLevel)
+                .padding(.horizontal, Spacing.s)
             } else {
                 if env.callDetected {
-                    Label("Call detected", systemImage: "phone.fill")
-                        .labelStyle(.titleAndIcon).foregroundStyle(.orange)
+                    StatusCapsule(text: "Call detected", color: .orange, systemImage: "phone.fill")
                 }
                 Button {
                     Task { await env.startRecording() }
@@ -135,10 +123,10 @@ private struct ToolbarMeter: View {
     let label: String
     let level: Float
     var body: some View {
-        HStack(spacing: 4) {
-            Text(label).font(.caption)
-            ProgressView(value: min(Double(level) * 4, 1.0))  // same scaling as LevelRow
-                .frame(width: 60)
+        HStack(spacing: Spacing.xs) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            LevelMeter(level: level, width: 56)  // same scaling as LevelRow — both use LevelMeter
+                .accessibilityLabel("\(label) level")
         }
         .help("\(label) input level")
     }
@@ -159,28 +147,28 @@ struct RecordingBar: View {
     }
 
     var body: some View {
-        if isRecording || failure != nil || !env.coordinator.finalizeJobs.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+        if isRecording || failure != nil || !env.coordinator.visibleFinalizeJobs.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.s) {
                 if isRecording {
                     if let warning = env.coordinator.streamWarning {
-                        Label(warning, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow).font(.caption)
+                        InlineMessage(text: warning, kind: .warning)
                     }
                     // Shared with MenuBarView's popover form (RecordingControls.swift) so the
                     // two surfaces can't drift.
                     RecordingControls(axis: .horizontal)
                 } else if let failure {
-                    Label(failure, systemImage: "xmark.octagon.fill")
-                        .foregroundStyle(.red).font(.caption).lineLimit(3)
+                    InlineMessage(text: failure, kind: .error, lineLimit: 3)
                 }
-                if !env.coordinator.finalizeJobs.isEmpty {
+                if !env.coordinator.visibleFinalizeJobs.isEmpty {
                     if isRecording || failure != nil { Divider() }
                     FinalizeJobsSection()
                 }
             }
-            .padding(10)
+            .padding(.horizontal, Spacing.l)
+            .padding(.vertical, Spacing.m)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.bar)
+            .overlay(alignment: .bottom) { Divider() }
         }
     }
 }

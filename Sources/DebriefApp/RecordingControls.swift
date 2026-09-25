@@ -14,23 +14,32 @@ struct RecordingControls: View {
 
     var body: some View {
         if axis == .vertical {
-            VStack(alignment: .leading, spacing: 10) {
-                prefillMenu
-                TextField("Company", text: $env.recordCompany)
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                HStack {
+                    Text("This interview").font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    prefillMenu
+                }
+                CompanyField(text: $env.recordCompany)
                 roundPicker
                 TextField("Notes (optional)", text: $env.recordNotes)
                 criteriaNote
                 stopButton
+                    .controlSize(.large)
+                    .padding(.top, Spacing.xs)
             }
+            .textFieldStyle(.roundedBorder)
         } else {
-            HStack {
+            HStack(spacing: Spacing.s) {
                 prefillMenu
-                TextField("Company", text: $env.recordCompany).frame(maxWidth: 200)
+                CompanyField(text: $env.recordCompany).frame(maxWidth: 200)
                 roundPicker.frame(maxWidth: 220)
                 TextField("Notes (optional)", text: $env.recordNotes)
                 criteriaNote
                 stopButton
             }
+            .textFieldStyle(.roundedBorder)
         }
     }
 
@@ -38,6 +47,7 @@ struct RecordingControls: View {
     /// both are empty, which is the normal case.
     private var prefillMenu: some View {
         PrefillMenu(onPlanned: { env.apply($0) }, onCalendar: { env.apply($0) })
+            .fixedSize()
     }
 
     /// The criteria are not editable here (there is no room in either surface, and they were
@@ -50,9 +60,9 @@ struct RecordingControls: View {
     /// this interview graded on the wrong criteria, and the right interview's plan gone.
     @ViewBuilder private var criteriaNote: some View {
         if !env.recordCriteria.isEmpty {
-            HStack(spacing: 2) {
-                Label("Grading criteria applied", systemImage: "text.badge.checkmark")
-                    .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: Spacing.xxs) {
+                StatusCapsule(text: "Grading criteria applied", color: .accentColor,
+                              systemImage: "text.badge.checkmark")
                 Button {
                     env.clearAppliedPlan()
                 } label: {
@@ -60,6 +70,7 @@ struct RecordingControls: View {
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel("Remove grading criteria")
                 .help("Don't apply these criteria, and keep the planned call")
             }
             .help(env.recordCriteria)
@@ -76,9 +87,13 @@ struct RecordingControls: View {
     /// and it replaces "Start recording" — which is prominent for the same reason — so
     /// neither surface ever shows two.
     private var stopButton: some View {
-        Button("Stop & Debrief") {
+        Button {
             Task { await env.stopAndDebrief() }
+        } label: {
+            Label("Stop & Debrief", systemImage: "stop.circle.fill")
+                .frame(maxWidth: axis == .vertical ? .infinity : nil)
         }
+        .labelStyle(.titleAndIcon)
         .buttonStyle(.borderedProminent)
     }
 }
