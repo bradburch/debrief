@@ -41,7 +41,11 @@ struct ResultRow: Codable {
         /// The stored verdict (nil if none), for precision/recall in the summary.
         var advancement: String?
         /// Set when the judge failed on this row (details in errors.jsonl, stage "judge").
+        /// A later run re-judges just this row; the coach call is not repeated.
         var judge_error: String?
+        /// The debrief exactly as the judge sees it (`Runner.debriefJSON`), so a re-judge and
+        /// the labelling sheet use the judged input, never the raw model text.
+        var debrief_json: String? = nil
     }
 }
 
@@ -139,8 +143,16 @@ enum Runner {
         /// `judgeError`: the debrief scored but the judge failed. The row is kept (no judge
         /// metrics) so resume doesn't re-bill the coach call; the judge failure is logged.
         case scored(ResultRow, trace: [Turn], judgeTrace: [Turn]?, judgeError: ErrorRow? = nil)
+        /// A resumed row whose judge had failed, judged again; rewritten in place in results.jsonl.
+        case rejudged(ResultRow, judgeTrace: [Turn]?, judgeError: ErrorRow?)
         case failed(ErrorRow)
     }
+
+    /// `scored` rows were written (new or re-judged); `judgeErrors` of them have no judge
+    /// metrics; `failed` coaching attempts produced no row. Only `failed` exits 1.
+    struct Counts { var scored = 0, judgeErrors = 0, failed = 0 }
+
+    static func traceName(_ row: ResultRow) -> String { "\(row.prompt_id)_rep\(row.rep).json" }
 
     /// nil = the model produced output, so this is a graded outcome (contract 0, refused, …),
     /// not plumbing. Everything else goes to errors.jsonl.
@@ -187,7 +199,7 @@ enum Runner {
 
     static func runJob(_ fx: Fixture, model: String, rep: Int, cfg: EvalConfig, prompts: PromptStore) async -> Outcome {
         let t0 = Date()
-        let capture = Capture(), retries = RetryCounter(), judgeRetries = RetryCounter()
+        let capture = Capture(), retries = RetryCounter()
         func failed(_ cls: String, _ stage: String, _ error: Any) -> Outcome {
             let m = capture.meta
             return .failed(ErrorRow(prompt_id: fx.id, rep: rep, failure_class: cls, stage: stage,
@@ -229,68 +241,99 @@ enum Runner {
         guard let detail = try? db.sessionDetail(id: sessionId) else { return failed("harness", "readback", "session vanished") }
 
         let truncated = meta.stopReason == "max_tokens"
-        var grade = truncated ? [:] : Grader.grade(
+        let grade = truncated ? [:] : Grader.grade(
             fx, dimensions: req.dims,
             state: EndState(status: detail.session.coachingStatus, feedback: detail.feedback, segments: detail.segments),
             refused: meta.stopReason == "refusal")
         var row = ResultRow(
             prompt_id: fx.id, rep: rep, prompt: req.user, tags: [fx.roundType, fx.source, fx.outcomeLabel],
             model: meta.model, usage: meta.usage, latency_s: meta.latency, stop_reason: meta.stopReason,
-            status: truncated ? "truncated" : "ok", grade: [:],
+            status: truncated ? "truncated" : "ok", grade: grade,
             meta: .init(requested_model: model, round_type: fx.roundType, prompt_hash: sha256(req.system),
                         schema_hash: schemaHash(req.dims), harness_sha: cfg.harnessSHA, rep: rep,
-                        retries: retries.count, advancement: detail.feedback?.advancement))
+                        retries: retries.count, advancement: detail.feedback?.advancement,
+                        debrief_json: truncated || detail.feedback == nil ? nil : debriefJSON(detail)))
         let trace = [Turn(role: "system", content: req.system), Turn(role: "user", content: req.user),
                      Turn(role: "assistant", content: meta.text ?? "", thinking: meta.thinking)]
 
         var judgeTrace: [Turn]?, judgeError: ErrorRow?
-        if let judgeModel = cfg.judgeModel, rep < cfg.judgeReps, !truncated, detail.feedback != nil {
-            let judge = Judge(apiKey: cfg.apiKey, model: judgeModel, session: cfg.session)
-            // The coach's own user message: metadata + candidate notes (level) + transcript.
-            let transcript = req.user
-            let debrief = debriefJSON(detail)
-            do {
-                let v = try await withCeiling(cfg.timeoutS) {
-                    try await withBackoff(judgeRetries) {
-                        try await judge.judge(roundType: fx.roundType, coachRubric: req.system,
-                                              transcript: transcript, debrief: debrief)
-                    }
-                }
-                grade.merge(v.grade) { $1 }
-                row.explanation = v.explanation
-                row.judge_model = v.model
-                row.judge_usage = v.usage
-                row.meta.judge_retries = judgeRetries.count
-                judgeTrace = [Turn(role: "system", content: JudgeRubric.system),
-                              Turn(role: "user", content: JudgeRubric.userMessage(
-                                roundType: fx.roundType, coachRubric: req.system, transcript: transcript, debrief: debrief)),
-                              Turn(role: "assistant", content: v.raw)]
-            } catch {
-                // Coach usage stays on the row; only the judge's billed usage goes here.
-                let f = error as? Judge.Failure
-                let cls = f.map { $0.message.hasPrefix("model_mismatch") ? "model_mismatch" : "decode" }
-                    ?? failureClass(error, meta: nil) ?? "harness"
-                row.meta.judge_error = cls
-                judgeError = ErrorRow(prompt_id: fx.id, rep: rep, failure_class: cls, stage: "judge",
-                                      error: String(describing: error).prefix(2000).description,
-                                      retries: judgeRetries.count, requested_model: model, model: nil, usage: nil,
-                                      judge_model: f?.model ?? judgeModel, judge_usage: f?.usage,
-                                      latency_s: Date().timeIntervalSince(t0))
-            }
+        if let judgeModel = cfg.judgeModel, rep < cfg.judgeReps, let debrief = row.meta.debrief_json {
+            (judgeTrace, judgeError) = await judgeRow(&row, coachRubric: req.system, debrief: debrief,
+                                                      judgeModel: judgeModel, cfg: cfg, t0: t0)
         }
-        row.grade = grade
         return .scored(row, trace: trace, judgeTrace: judgeTrace, judgeError: judgeError)
     }
 
-    /// Runs every pending (case, model, rep), writing each row as it lands. Returns the
-    /// number of failed attempts.
+    /// Judges a scored row in place: success merges the judge metrics and clears
+    /// `judge_error`; failure sets it and returns the error row. The first run and resume's
+    /// re-judge both come through here, so the judge gets identical input either way.
+    static func judgeRow(_ row: inout ResultRow, coachRubric: String, debrief: String, judgeModel: String,
+                         cfg: EvalConfig, t0: Date) async -> (trace: [Turn]?, error: ErrorRow?) {
+        let judge = Judge(apiKey: cfg.apiKey, model: judgeModel, session: cfg.session)
+        let judgeRetries = RetryCounter()
+        // The coach's own user message: metadata + candidate notes (level) + transcript.
+        let transcript = row.prompt, roundType = row.meta.round_type
+        do {
+            let v = try await withCeiling(cfg.timeoutS) {
+                try await withBackoff(judgeRetries) {
+                    try await judge.judge(roundType: roundType, coachRubric: coachRubric,
+                                          transcript: transcript, debrief: debrief)
+                }
+            }
+            row.grade.merge(v.grade) { $1 }
+            row.explanation = v.explanation
+            row.judge_model = v.model
+            row.judge_usage = v.usage
+            row.meta.judge_retries = judgeRetries.count
+            row.meta.judge_error = nil
+            return ([Turn(role: "system", content: JudgeRubric.system),
+                     Turn(role: "user", content: JudgeRubric.userMessage(
+                        roundType: roundType, coachRubric: coachRubric, transcript: transcript, debrief: debrief)),
+                     Turn(role: "assistant", content: v.raw)], nil)
+        } catch {
+            // Coach usage stays on the row; only the judge's billed usage goes here.
+            let f = error as? Judge.Failure
+            let cls = f.map { $0.message.hasPrefix("model_mismatch") ? "model_mismatch" : "decode" }
+                ?? failureClass(error, meta: nil) ?? "harness"
+            row.meta.judge_error = cls
+            return (nil, ErrorRow(prompt_id: row.prompt_id, rep: row.rep, failure_class: cls, stage: "judge",
+                                  error: String(describing: error).prefix(2000).description,
+                                  retries: judgeRetries.count, requested_model: row.meta.requested_model,
+                                  model: nil, usage: nil, judge_model: f?.model ?? judgeModel, judge_usage: f?.usage,
+                                  latency_s: Date().timeIntervalSince(t0)))
+        }
+    }
+
+    /// Resume path for a row whose judge failed: re-runs only the judge, on the persisted
+    /// debrief and the trace's coach rubric. The coach call is never repeated.
+    static func rejudge(_ row: ResultRow, vdir: URL, judgeModel: String, cfg: EvalConfig) async -> Outcome {
+        let t0 = Date()
+        var row = row
+        let system = (try? Data(contentsOf: vdir.appendingPathComponent("traces/\(traceName(row))")))
+            .flatMap { try? JSONDecoder().decode([Turn].self, from: $0) }?.first { $0.role == "system" }?.content
+        guard let debrief = row.meta.debrief_json, let system, sha256(system) == row.meta.prompt_hash else {
+            row.meta.judge_error = "harness"
+            return .rejudged(row, judgeTrace: nil, judgeError: ErrorRow(
+                prompt_id: row.prompt_id, rep: row.rep, failure_class: "harness", stage: "judge",
+                error: "can't re-judge: no persisted judge input (meta.debrief_json + trace system prompt matching prompt_hash)",
+                retries: 0, requested_model: row.meta.requested_model, model: nil, usage: nil,
+                judge_model: nil, judge_usage: nil, latency_s: 0))
+        }
+        let (trace, error) = await judgeRow(&row, coachRubric: system, debrief: debrief, judgeModel: judgeModel, cfg: cfg, t0: t0)
+        return .rejudged(row, judgeTrace: trace, judgeError: error)
+    }
+
+    enum Job { case coach(Fixture, model: Int, rep: Int), rejudge(ResultRow, model: Int) }
+
+    /// Runs every pending (case, model, rep), and re-judges every row whose judge failed,
+    /// writing each row as it lands.
     @discardableResult
-    static func run(_ cfg: EvalConfig) async throws -> Int {
+    static func run(_ cfg: EvalConfig) async throws -> Counts {
         let prompts = PromptStore(directory: cfg.promptsDir)
         let fixtures = try plannedFixtures(cfg, prompts)
-        try EvalFiles.writeStateIfAbsent(cfg)
+        try EvalFiles.refreshState(cfg)
 
-        var jobs: [(Fixture, Int, Int)] = []  // (fixture, model index, rep)
+        var jobs: [Job] = []
         for (i, model) in cfg.models.enumerated() {
             let vdir = cfg.outDir.appendingPathComponent(variantName(i))
             try FileManager.default.createDirectory(at: vdir.appendingPathComponent("traces"), withIntermediateDirectories: true)
@@ -301,49 +344,70 @@ enum Runner {
                 throw EvalError.refuse("\(vdir.path) already holds \(other.meta.requested_model) rows; asked to add \(model). Use another --out.")
             }
             let done = Set(rows.map { "\($0.prompt_id)\u{0}\($0.rep)" })
-            for fx in fixtures { for rep in 0..<cfg.reps where !done.contains("\(fx.id)\u{0}\(rep)") { jobs.append((fx, i, rep)) } }
+            for fx in fixtures { for rep in 0..<cfg.reps where !done.contains("\(fx.id)\u{0}\(rep)") { jobs.append(.coach(fx, model: i, rep: rep)) } }
+            if cfg.judgeModel != nil {
+                for row in rows where row.meta.judge_error != nil && row.rep < cfg.judgeReps { jobs.append(.rejudge(row, model: i)) }
+            }
         }
-        log("\(jobs.count) of \(fixtures.count * cfg.models.count * cfg.reps) (case, model, rep) to run")
+        let rejudges = jobs.filter { if case .rejudge = $0 { return true }; return false }.count
+        log("\(jobs.count - rejudges) of \(fixtures.count * cfg.models.count * cfg.reps) (case, model, rep) to run"
+            + (rejudges > 0 ? ", plus \(rejudges) judge-only re-run(s)" : ""))
 
-        var finished = 0, failures = 0
+        var finished = 0, counts = Counts()
         let started = Date()
         await withTaskGroup(of: (Int, Outcome).self) { group in
             var next = jobs.makeIterator()
             func launch() {
-                guard let (fx, i, rep) = next.next() else { return }
-                group.addTask { (i, await runJob(fx, model: cfg.models[i], rep: rep, cfg: cfg, prompts: prompts)) }
+                switch next.next() {
+                case nil: return
+                case .coach(let fx, let i, let rep)?:
+                    group.addTask { (i, await runJob(fx, model: cfg.models[i], rep: rep, cfg: cfg, prompts: prompts)) }
+                case .rejudge(let row, let i)?:
+                    let vdir = cfg.outDir.appendingPathComponent(variantName(i))
+                    group.addTask { (i, await rejudge(row, vdir: vdir, judgeModel: cfg.judgeModel!, cfg: cfg)) }
+                }
             }
             for _ in 0..<max(1, cfg.concurrency) { launch() }
             while let (i, outcome) = await group.next() {
                 let vdir = cfg.outDir.appendingPathComponent(variantName(i))
+                let results = vdir.appendingPathComponent("results.jsonl")
                 finished += 1
                 do {
                     switch outcome {
                     case .scored(let row, let trace, let judgeTrace, let judgeError):
-                        try EvalFiles.append(row, to: vdir.appendingPathComponent("results.jsonl"))
-                        if let judgeError {
-                            failures += 1
-                            try EvalFiles.append(judgeError, to: vdir.appendingPathComponent("errors.jsonl"))
-                            log("  judge failed (\(judgeError.failure_class)): \(judgeError.error.prefix(200))")
-                        }
-                        let name = "\(row.prompt_id)_rep\(row.rep).json"
+                        try EvalFiles.append(row, to: results)
+                        counts.scored += 1
+                        let name = traceName(row)
                         try EvalFiles.write(trace, to: vdir.appendingPathComponent("traces/\(name)"))
                         if let judgeTrace { try EvalFiles.write(judgeTrace, to: vdir.appendingPathComponent("judge/\(name)")) }
                         let g = row.grade
                         log("[\(finished)/\(jobs.count)] \(row.prompt_id) \(row.meta.requested_model) rep\(row.rep) \(row.status)"
                             + " contract=\(g["contract"].map { Int($0) }.map(String.init) ?? "-")"
                             + " verdict=\(g["verdict_match"].map { Int($0) }.map(String.init) ?? "-")")
+                        if let judgeError { counts.judgeErrors += 1; try logJudgeError(judgeError, vdir) }
+                    case .rejudged(let row, let judgeTrace, let judgeError):
+                        try EvalFiles.replace(row, in: results)
+                        counts.scored += 1
+                        if let judgeTrace { try EvalFiles.write(judgeTrace, to: vdir.appendingPathComponent("judge/\(traceName(row))")) }
+                        log("[\(finished)/\(jobs.count)] \(row.prompt_id) \(row.meta.requested_model) rep\(row.rep) re-judged"
+                            + (judgeError == nil ? " ok" : ""))
+                        if let judgeError { counts.judgeErrors += 1; try logJudgeError(judgeError, vdir) }
                     case .failed(let err):
-                        failures += 1
+                        counts.failed += 1
                         try EvalFiles.append(err, to: vdir.appendingPathComponent("errors.jsonl"))
                         log("[\(finished)/\(jobs.count)] \(err.prompt_id) \(err.requested_model) rep\(err.rep) ERROR \(err.failure_class): \(err.error.prefix(200))")
                     }
-                } catch { failures += 1; log("write failed: \(error)") }
+                } catch { counts.failed += 1; log("write failed: \(error)") }
                 launch()
             }
         }
-        log("done in \(Int(Date().timeIntervalSince(started)))s: \(finished - failures) scored, \(failures) failed")
-        return failures
+        log("done in \(Int(Date().timeIntervalSince(started)))s: \(counts.scored) scored, \(counts.judgeErrors) judge errors, \(counts.failed) failed")
+        return counts
+    }
+
+    static func logJudgeError(_ e: ErrorRow, _ vdir: URL) throws {
+        try EvalFiles.append(e, to: vdir.appendingPathComponent("errors.jsonl"))
+        log("  judge failed (\(e.failure_class)): \(e.error.prefix(200))")
     }
 }
 
@@ -367,6 +431,21 @@ enum EvalFiles {
         try h.write(contentsOf: line)
     }
 
+    /// Rewrites results.jsonl atomically with `row` in place of the line for its (case, rep).
+    /// Other lines are kept byte-for-byte, undecodable ones included.
+    static func replace(_ row: ResultRow, in url: URL) throws {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var replaced = false
+        let lines = try text.split(separator: "\n").map { line -> String in
+            guard let old = try? JSONDecoder().decode(ResultRow.self, from: Data(line.utf8)),
+                  old.prompt_id == row.prompt_id, old.rep == row.rep else { return String(line) }
+            replaced = true
+            return String(decoding: try JSONEncoder().encode(row), as: UTF8.self)
+        }
+        guard replaced else { throw EvalError.refuse("no \(row.prompt_id) rep\(row.rep) row in \(url.path) to replace") }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
     static func write<T: Encodable>(_ value: T, to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let enc = JSONEncoder()
@@ -374,17 +453,25 @@ enum EvalFiles {
         try enc.encode(value).write(to: url, options: .atomic)
     }
 
+    /// First-party $/MTok (input, output).
     static let prices: [String: (in: Double, out: Double)] = [
-        "claude-sonnet-5-5": (2, 10), "claude-haiku-5-5": (0.10, 0.50), "claude-opus-5-5": (4, 20),
+        "claude-fable-5-1": (10, 50), "claude-fable-5": (10, 50),
+        "claude-opus-5-5": (4, 20), "claude-opus-5": (5, 25),
+        "claude-opus-4-8": (5, 25), "claude-opus-4-7": (5, 25), "claude-opus-4-6": (5, 25),
+        "claude-sonnet-5-5": (2, 10), "claude-sonnet-5": (2, 10), "claude-sonnet-4-6": (3, 15),
+        "claude-haiku-5-5": (0.10, 0.50), "claude-haiku-4-5": (1, 5),
     ]
 
-    /// Longest-prefix match so a dated snapshot id prices as its alias.
+    /// Exact id or its dated snapshot (`claude-haiku-4-5-20251001`); an unlisted model is nil,
+    /// never priced as a neighbouring family member.
     static func price(_ model: String) -> (in: Double, out: Double)? {
-        prices.filter { model.hasPrefix($0.key) }.max { $0.key.count < $1.key.count }?.value
+        prices.first { servedMatches(model, $0.key) }?.value
     }
 
-    static func cost(_ model: String?, _ u: ResponseMeta.Usage?) -> Double {
-        guard let model, let u, let p = price(model) else { return 0 }
+    /// nil = billed usage on a model with no price: shown as "unpriced", never as $0.
+    static func cost(_ model: String?, _ u: ResponseMeta.Usage?) -> Double? {
+        guard let u else { return 0 }
+        guard let model, let p = price(model) else { return nil }
         return (Double(u.inputTokens) * p.in + Double(u.outputTokens) * p.out
                 + Double(u.cacheReadInputTokens ?? 0) * p.in * 0.1
                 + Double(u.cacheCreationInputTokens ?? 0) * p.in * 1.25) / 1_000_000
@@ -430,17 +517,18 @@ enum EvalFiles {
             .write(to: stateURL(out), options: .atomic)
     }
 
-    static func writeStateIfAbsent(_ cfg: EvalConfig) throws {
-        guard !FileManager.default.fileExists(atPath: stateURL(cfg.outDir).path) else { return }
-        try writeState([
-            "reps": cfg.reps,
-            "metrics": metrics,
-            "perf_fields": [["id": "cost_usd", "label": "Cost", "unit": "$"],
-                            ["id": "in_tokens", "label": "In tok"], ["id": "out_tokens", "label": "Out tok"],
-                            ["id": "latency_s", "label": "Latency", "unit": "s"]],
-            "prices": Dictionary(uniqueKeysWithValues: prices.map { ($0.key, ["in": $0.value.in, "out": $0.value.out]) }),
-            "harness_paths": harnessPaths,
-        ], cfg.outDir)
+    /// Refreshed on every run so reps/metrics/prices describe the latest run, not the first.
+    /// Other keys (harness_sha, anything hand-added) are kept, and so are extra harness paths.
+    static func refreshState(_ cfg: EvalConfig) throws {
+        var st = readState(cfg.outDir)
+        st["reps"] = cfg.reps
+        st["metrics"] = metrics
+        st["perf_fields"] = [["id": "cost_usd", "label": "Cost", "unit": "$"],
+                             ["id": "in_tokens", "label": "In tok"], ["id": "out_tokens", "label": "Out tok"],
+                             ["id": "latency_s", "label": "Latency", "unit": "s"]]
+        st["prices"] = Dictionary(uniqueKeysWithValues: prices.map { ($0.key, ["in": $0.value.in, "out": $0.value.out]) })
+        st["harness_paths"] = Harness.paths(st)
+        try writeState(st, cfg.outDir)
     }
 
     static func writeChangeIfAbsent(_ vdir: URL, model: String, baseline: String) throws {
@@ -459,10 +547,16 @@ enum EvalFiles {
 }
 
 /// Change detector over the harness, not a security boundary: sha256 over
-/// Sources/DebriefEval/*.swift + `_state.json.harness_paths`, compared to the sha a human
-/// last approved with --approve-harness.
+/// Sources/DebriefEval/*.swift + `paths(_:)`, compared to the sha a human last approved
+/// with --approve-harness.
 enum Harness {
     static let sourceDir = "Sources/DebriefEval"
+
+    /// The current `EvalFiles.harnessPaths` plus any extra paths added to `_state.json` —
+    /// the one list the gate, --dry-run and the state file all use.
+    static func paths(_ st: [String: Any]) -> [String] {
+        Set(EvalFiles.harnessPaths + (st["harness_paths"] as? [String] ?? [])).sorted()
+    }
 
     static func sha(listed: [String]) throws -> String {
         let fm = FileManager.default
@@ -480,7 +574,7 @@ enum Harness {
     /// Returns the sha to stamp on rows; throws `.refuse` (exit 2) on an unapproved harness.
     static func gate(out: URL, approve: Bool) throws -> String {
         var st = EvalFiles.readState(out)
-        let sha = try sha(listed: st["harness_paths"] as? [String] ?? [])
+        let sha = try sha(listed: paths(st))
         if st["harness_sha"] as? String == sha { return sha }
         if approve {
             st["harness_sha"] = sha

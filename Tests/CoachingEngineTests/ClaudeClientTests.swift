@@ -142,6 +142,10 @@ final class ClaudeClientTests: XCTestCase {
         let haiku = try await thinking(forModel: "claude-haiku-4-5-20251001")
         XCTAssertEqual(haiku["type"] as? String, "enabled")
         XCTAssertEqual(haiku["budget_tokens"] as? Int, 8000)
+        // Haiku 5.5 rejects budget_tokens (400); it takes adaptive like the other 5.x models.
+        let haiku55 = try await thinking(forModel: "claude-haiku-5-5")
+        XCTAssertEqual(haiku55["type"] as? String, "adaptive")
+        XCTAssertNil(haiku55["budget_tokens"])
     }
 }
 

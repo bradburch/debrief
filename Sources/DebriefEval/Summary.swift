@@ -1,5 +1,6 @@
 import Foundation
 import Store
+import CoachingEngine
 
 enum Summary {
     struct CaseK { let id: String; let n: Int; let c: Int }
@@ -82,7 +83,9 @@ enum Summary {
         // later success — the number that says whether the comparison is complete.
         row("rows ok / truncated / failed attempts / unresolved") { d in
             let scored = Set(d.1.map { "\($0.prompt_id)\u{0}\($0.rep)" })
-            let open = Set(d.2.filter { $0.stage == "judge" || !scored.contains("\($0.prompt_id)\u{0}\($0.rep)") }
+            // A judge error is resolved once a re-judge clears the row's judge_error.
+            let judged = Set(d.1.filter { $0.meta.judge_error == nil }.map { "\($0.prompt_id)\u{0}\($0.rep)" })
+            let open = Set(d.2.filter { !($0.stage == "judge" ? judged : scored).contains("\($0.prompt_id)\u{0}\($0.rep)") }
                 .map { "\($0.prompt_id)\u{0}\($0.rep)\u{0}\($0.stage)" })
             return "\(d.0.count) / \(d.1.count - d.0.count) / \(d.2.count) / \(open.count)"
         }
@@ -93,9 +96,11 @@ enum Summary {
             "\(d.1.compactMap { $0.judge_usage?.inputTokens }.reduce(0, +)) / \(d.1.compactMap { $0.judge_usage?.outputTokens }.reduce(0, +))"
         }
         row("cost $ (coach + judge + failed)") { d in
-            let coach = d.1.map { EvalFiles.cost($0.model, $0.usage) }.reduce(0, +)
-            let judge = d.1.map { EvalFiles.cost($0.judge_model, $0.judge_usage) }.reduce(0, +)
-            let failed = d.2.map { EvalFiles.cost($0.model, $0.usage) + EvalFiles.cost($0.judge_model, $0.judge_usage) }.reduce(0, +)
+            let un = unpricedModels(d.1, d.2)
+            guard un.isEmpty else { return "unpriced (\(un.joined(separator: ", ")))" }
+            let coach = d.1.map { EvalFiles.cost($0.model, $0.usage) ?? 0 }.reduce(0, +)
+            let judge = d.1.map { EvalFiles.cost($0.judge_model, $0.judge_usage) ?? 0 }.reduce(0, +)
+            let failed = d.2.map { (EvalFiles.cost($0.model, $0.usage) ?? 0) + (EvalFiles.cost($0.judge_model, $0.judge_usage) ?? 0) }.reduce(0, +)
             return "\(f(coach + judge + failed, 3)) (\(f(coach, 3)) + \(f(judge, 3)) + \(f(failed, 3)))"
         }
         row("latency p50 / p95 s") { d in
@@ -111,6 +116,13 @@ enum Summary {
         row("harness_sha") { Set($0.1.map { String($0.meta.harness_sha.prefix(10)) }).sorted().joined(separator: ", ") }
         row("prompt_hash by round") { d in
             Set(d.1.map { "\($0.meta.round_type):\($0.meta.prompt_hash.prefix(8))" }).sorted().joined(separator: "<br>")
+        }
+
+        let unpriced = Set(data.flatMap { unpricedModels($0.all, $0.errs) }).sorted()
+        if !unpriced.isEmpty {
+            let warning = "no price for \(unpriced.joined(separator: ", ")); cost is unpriced, not $0. Add it to EvalFiles.prices."
+            md += "\n**Warning:** \(warning)\n"
+            log("warning: \(warning)")
         }
 
         md += "\n## Per case (passes / reps)\n\n| case | " + vs.flatMap { ["\($0) contract", "\($0) verdict"] }.joined(separator: " | ")
@@ -132,12 +144,23 @@ enum Summary {
         return md
     }
 
+    /// Models with billed usage but no price, across result and error rows.
+    static func unpricedModels(_ rows: [ResultRow], _ errs: [ErrorRow]) -> [String] {
+        let pairs: [(String?, ResponseMeta.Usage?)] = rows.flatMap { [($0.model, $0.usage), ($0.judge_model, $0.judge_usage)] }
+            + errs.flatMap { [($0.model, $0.usage), ($0.judge_model, $0.judge_usage)] }
+        return Set(pairs.compactMap { m, u in EvalFiles.cost(m, u) == nil ? m ?? "<unknown>" : nil }).sorted()
+    }
+
     /// Writes summary.md, prints it, then runs the lite report builder if node and the
     /// builder are both present — skipped (not an error) otherwise.
-    static func write(out: URL, k: Int, reportBuilder: String) {
+    static func write(out: URL, k: Int, reportBuilder: String?) {
         let md = build(out: out, k: k)
         try? md.write(to: out.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
         print(md)
+        guard let reportBuilder else {
+            log("report.html skipped: pass --report-builder PATH or set DEBRIEF_REPORT_BUILDER to build-report-lite.mjs (from the claude-api skill)")
+            return
+        }
         let node = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
             .map { "\($0)/node" }.first { FileManager.default.isExecutableFile(atPath: $0) }
         guard let node, FileManager.default.fileExists(atPath: reportBuilder) else {

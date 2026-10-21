@@ -89,11 +89,12 @@ public struct AnthropicClient: CoachingLLM {
 
     /// Adaptive thinking is a Claude 4.6+ feature; pre-4.6 models (e.g. Haiku 4.5)
     /// reject it with a 400 and require the older enabled+budget form. Without this
-    /// branch, selecting Haiku in Settings would fail every debrief.
-    /// ponytail: substring match over the one non-adaptive model we offer; extend the
+    /// branch, selecting Haiku 4.5 in Settings would fail every debrief. Haiku 5.5 is the
+    /// reverse: it 400s on `budget_tokens` and takes adaptive, so match the 4.x family only.
+    /// ponytail: prefix match over the one non-adaptive model we offer; extend the
     /// check if older models are added to the picker.
     var thinkingParam: [String: Any] {
-        model.contains("haiku")
+        model.hasPrefix("claude-haiku-4")
             ? ["type": "enabled", "budget_tokens": 8000]  // < max_tokens (16000), > 1024 min
             : ["type": "adaptive"]
     }

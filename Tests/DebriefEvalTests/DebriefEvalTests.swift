@@ -112,7 +112,7 @@ final class DebriefEvalTests: XCTestCase {
         try FileManager.default.copyItem(at: Self.root.appendingPathComponent("eval/fixtures/synthetic/syn-recruiter-weak.json"),
                                          to: fxDir.appendingPathComponent("syn-recruiter-weak.json"))
         let cfg = config(status: 400, text: nil)
-        let failures = try await Runner.run(cfg)
+        let failures = try await Runner.run(cfg).failed
         XCTAssertEqual(failures, 1)
         let vdir = cfg.outDir.appendingPathComponent("baseline")
         XCTAssertTrue(EvalFiles.rows(vdir).isEmpty)
@@ -120,7 +120,7 @@ final class DebriefEvalTests: XCTestCase {
         XCTAssertEqual(errs.map(\.failure_class), ["http_4xx"])
         XCTAssertEqual(errs.first?.retries, 0, "a 400 is not retried")
         // Resume re-runs it: the failed (case, rep) holds no slot in results.jsonl.
-        let again = try await Runner.run(cfg)
+        let again = try await Runner.run(cfg).failed
         XCTAssertEqual(again, 1)
         XCTAssertEqual(EvalFiles.errors(vdir).count, 2)
     }
@@ -132,12 +132,12 @@ final class DebriefEvalTests: XCTestCase {
                                          to: fxDir.appendingPathComponent("syn-behavioral-strong.json"))
         var cfg = config(text: try oracle(try fixture("syn-behavioral-strong")))
         cfg.reps = 2
-        let failures = try await Runner.run(cfg)
+        let failures = try await Runner.run(cfg).failed
         XCTAssertEqual(failures, 0)
         let vdir = cfg.outDir.appendingPathComponent("baseline")
         XCTAssertEqual(EvalFiles.rows(vdir).map(\.rep).sorted(), [0, 1])
         XCTAssertTrue(FileManager.default.fileExists(atPath: vdir.appendingPathComponent("traces/syn-behavioral-strong_rep1.json").path))
-        let again = try await Runner.run(cfg)
+        let again = try await Runner.run(cfg).failed
         XCTAssertEqual(again, 0)
         XCTAssertEqual(EvalFiles.rows(vdir).count, 2, "resume skips (case, rep) already scored")
         let md = Summary.build(out: cfg.outDir, k: 2)
@@ -162,6 +162,59 @@ final class DebriefEvalTests: XCTestCase {
         XCTAssertEqual(row.meta.judge_error, "http_4xx")
         XCTAssertEqual(judgeError.stage, "judge")
         XCTAssertNil(judgeError.usage, "coach usage stays on the row, not double-counted")
+    }
+
+    /// Resume after a judge failure re-runs only the judge — on the persisted debrief — and
+    /// rewrites that row in place; the coach call is not billed again.
+    func testResumeRejudgesOnlyTheJudge() async throws {
+        let fxDir = tmp.appendingPathComponent("fx")
+        try FileManager.default.createDirectory(at: fxDir, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: Self.root.appendingPathComponent("eval/fixtures/synthetic/syn-behavioral-strong.json"),
+                                         to: fxDir.appendingPathComponent("syn-behavioral-strong.json"))
+        var cfg = config(text: try oracle(try fixture("syn-behavioral-strong")))
+        cfg.judgeModel = "claude-opus-5-5"
+        let coach = MockURLProtocol.handler!
+        nonisolated(unsafe) var coachCalls = 0, judgeOK = false, judgedDebrief = ""
+        MockURLProtocol.handler = { req in
+            let body = try! JSONSerialization.jsonObject(with: req.bodyData()) as! [String: Any]
+            guard body["model"] as? String == "claude-opus-5-5" else { coachCalls += 1; return coach(req) }
+            guard judgeOK else { return (400, Data("bad".utf8)) }
+            judgedDebrief = ((body["messages"] as! [[String: Any]])[0]["content"] as! String)
+            let verdict = Dictionary(uniqueKeysWithValues: JudgeRubric.criteria.map { ($0, ["reason": "r", "satisfied": true]) })
+            let text = String(decoding: try! JSONSerialization.data(withJSONObject: verdict), as: UTF8.self)
+            return (200, try! JSONSerialization.data(withJSONObject: [
+                "model": "claude-opus-5-5", "stop_reason": "end_turn", "content": [["type": "text", "text": text]],
+                "usage": ["input_tokens": 7, "output_tokens": 3]] as [String: Any]))
+        }
+        let first = try await Runner.run(cfg)
+        XCTAssertEqual([first.scored, first.judgeErrors, first.failed], [1, 1, 0])
+        let vdir = cfg.outDir.appendingPathComponent("baseline")
+        let debrief = try XCTUnwrap(EvalFiles.rows(vdir).first?.meta.debrief_json)
+        XCTAssertNotNil(EvalFiles.rows(vdir).first?.meta.judge_error)
+
+        judgeOK = true
+        let second = try await Runner.run(cfg)
+        XCTAssertEqual([second.scored, second.judgeErrors, second.failed], [1, 0, 0])
+        XCTAssertEqual(coachCalls, 1, "resume must not re-bill the coach call")
+        let rows = EvalFiles.rows(vdir)
+        XCTAssertEqual(rows.count, 1, "re-judged row replaced in place, not appended")
+        XCTAssertNil(rows[0].meta.judge_error)
+        XCTAssertEqual(rows[0].grade["grounded"], 1)
+        XCTAssertEqual(rows[0].grade["contract"], 1, "coach grades survive the rewrite")
+        XCTAssertEqual(rows[0].judge_usage?.inputTokens, 7)
+        XCTAssertTrue(judgedDebrief.contains(debrief), "the judge saw the persisted debrief")
+        XCTAssertTrue(Summary.build(out: cfg.outDir, k: 1).contains("| 1 / 0 / 1 / 0 |"), "the judge error is now resolved")
+
+        let third = try await Runner.run(cfg)
+        XCTAssertEqual([third.scored, third.judgeErrors, third.failed], [0, 0, 0])
+    }
+
+    func testUnknownModelIsUnpricedNotFree() {
+        XCTAssertEqual(EvalFiles.price("claude-haiku-4-5-20251001")?.in, 1)
+        XCTAssertEqual(EvalFiles.price("claude-opus-5")?.out, 25)
+        XCTAssertNil(EvalFiles.price("claude-opus-5-7"), "no neighbouring-family fallback")
+        XCTAssertNil(EvalFiles.cost("claude-mystery-1", .init(inputTokens: 10, outputTokens: 5)))
+        XCTAssertEqual(EvalFiles.cost("claude-mystery-1", nil), 0, "no usage, nothing billed")
     }
 
     func testTruncatedIsUngradedAndServedModelMatchIsStrict() async throws {

@@ -12,8 +12,6 @@ struct EvalCLI {
            swift run DebriefEval --summary | --judge-selftest | --export-labels N | --agreement
     """
 
-    static let defaultBuilder = "/private/tmp/claude-501/bundled-skills/2.1.304/72c2dfd594bc44338f790a57a69c6d32/claude-api/shared/evals/report/build-report-lite.mjs"
-
     static func main() async {
         do { exit(try await run(Array(CommandLine.arguments.dropFirst()))) }
         catch EvalError.refuse(let m) { log("refusing to run: \(m)"); exit(2) }
@@ -53,7 +51,7 @@ struct EvalCLI {
             outDir: out,
             fixtureDirs: [URL(fileURLWithPath: "eval/fixtures/synthetic"), URL(fileURLWithPath: "eval/fixtures/local")])
         let labelsDir = URL(fileURLWithPath: "eval/labels")
-        let builder = a["--report-builder"] ?? defaultBuilder
+        let builder = a["--report-builder"] ?? ProcessInfo.processInfo.environment["DEBRIEF_REPORT_BUILDER"]
 
         if flags.contains("--summary") { Summary.write(out: out, k: cfg.reps, reportBuilder: builder); return 0 }
         if flags.contains("--agreement") { print(try Labels.agreement(out: out, dir: labelsDir)); return 0 }
@@ -68,11 +66,15 @@ struct EvalCLI {
 
         cfg.apiKey = try apiKey()
         if flags.contains("--judge-selftest") { return try await selfTest(cfg) }
-        try EvalFiles.writeStateIfAbsent(cfg)
         cfg.harnessSHA = try Harness.gate(out: out, approve: flags.contains("--approve-harness"))
-        let failures = try await Runner.run(cfg)
+        let counts = try await Runner.run(cfg)
         Summary.write(out: out, k: cfg.reps, reportBuilder: builder)
-        return failures > 0 ? 1 : 0
+        // Judge-only errors keep their scored rows and re-judge on the next run, so they warn
+        // rather than fail; only a coaching attempt with no row exits 1.
+        if counts.judgeErrors > 0 && counts.failed == 0 {
+            log("warning: \(counts.judgeErrors) judge error(s); re-run to re-judge just those rows (coaching is not re-billed)")
+        }
+        return counts.failed > 0 ? 1 : 0
     }
 
     /// ANTHROPIC_API_KEY, else the app's secrets.json (same file SecretStore writes). Never printed.
@@ -116,7 +118,7 @@ struct EvalCLI {
         }
         print("estimate: ~$\(Summary.f(total)) (assumes 10k in / 5k out per coaching call, 12k in / 1.5k out per judge call; resume skips rows already in \(out.path))")
         let st = EvalFiles.readState(out)
-        let sha = try Harness.sha(listed: st["harness_paths"] as? [String] ?? EvalFiles.harnessPaths)
+        let sha = try Harness.sha(listed: Harness.paths(st))
         print("harness sha \(sha.prefix(12)): " + (st["harness_sha"] as? String == sha ? "approved" : "NOT approved — the real run exits 2 until run once with --approve-harness"))
     }
 
@@ -172,7 +174,7 @@ struct EvalCLI {
             let passed = JudgeRubric.criteria.filter { v.grade[$0] == 1 }
             ok = ok && passed.isEmpty
             print("\(name): \(passed.isEmpty ? "OK (failed every criterion)" : "JUDGE TOO LENIENT — passed \(passed.joined(separator: ","))")"
-                  + "  [$\(Summary.f(EvalFiles.cost(v.model, v.usage), 3))]")
+                  + "  [\(EvalFiles.cost(v.model, v.usage).map { "$" + Summary.f($0, 3) } ?? "unpriced")]")
             for c in JudgeRubric.criteria { print("    \(c)=\(Int(v.grade[c] ?? -1)) \(v.explanation[c] ?? "")") }
         }
         return ok ? 0 : 1

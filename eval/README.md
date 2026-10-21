@@ -13,8 +13,14 @@ swift run DebriefEval                           # sonnet-5-5 vs haiku-5-5, 5 rep
 
 Results land in `.claude/hillclimb/coaching/`: `baseline/` is the first `--models` entry and
 `v1/` the second. Each holds `results.jsonl`, `errors.jsonl` and `traces/`, with a
-`summary.md` plus `report.html` at the top. A re-run resumes, skipping every (case, rep) it
-already scored. Errors are always re-run.
+`summary.md` (plus `report.html`, if a report builder is configured) at the top. A re-run
+resumes, skipping every (case, rep) it already scored. Errors are always re-run. A row whose
+judge failed is re-judged on the next run — only the judge call, on the debrief persisted in
+the row's `meta.debrief_json`; the coaching call is never re-billed.
+
+Exit codes: 0 on success, and also when only judge calls failed (a warning says how many; the
+next run re-judges them); 1 when any coaching attempt failed; 2 when the run is refused
+(unapproved harness, bad arguments, no API key).
 
 ## Flags
 
@@ -29,7 +35,7 @@ already scored. Errors are always re-run.
 | `--timeout-s N` | 300 | hard wall-clock ceiling per call, retries included |
 | `--prompts-dir DIR` | `~/Library/Application Support/Debrief/prompts` | read-only |
 | `--out DIR` | `.claude/hillclimb/coaching` | |
-| `--report-builder PATH` | the claude-api skill's `build-report-lite.mjs` | skipped if it or `node` is missing |
+| `--report-builder PATH` | `$DEBRIEF_REPORT_BUILDER` | `build-report-lite.mjs`, which ships with Claude Code's `/claude-api` skill at `shared/evals/report/build-report-lite.mjs`. With neither set, `report.html` is skipped with a one-line note; also skipped if `node` is missing |
 | `--summary` | | rebuild `summary.md` and the report from what's on disk |
 
 The cases are `fixtures/synthetic/*.json` (committed) plus `fixtures/local/*.json`, which hold
@@ -60,14 +66,16 @@ Rows with `status: truncated` are counted but kept out of the means, so compare 
 counts between models too. A failed attempt goes to `errors.jsonl` with a class (`http_4xx`,
 `http_5xx`, `timeout`, `transport`, `decode`, `model_mismatch`, `harness`) and never to
 `results.jsonl`. When only the judge fails, the scored row is kept without judge metrics, and
-the judge error is logged with `stage: judge`.
+the judge error is logged with `stage: judge`; the run reports "N scored, M judge errors, F
+failed" and the next run re-judges that row in place.
 
 ## Cost
 
 `--dry-run` prints an estimate: 10k in / 5k out tokens per coaching call and 12k / 1.5k per
-judge call, at sonnet-5-5 $2/$10, haiku-5-5 $0.10/$0.50 and opus-5-5 $4/$20 per MTok. Long
-real transcripts run well above 10k input tokens, so check a pilot's `usage` before trusting
-the estimate.
+judge call, at the first-party $/MTok in `EvalFiles.prices` (e.g. sonnet-5-5 $2/$10,
+haiku-5-5 $0.10/$0.50, opus-5-5 $4/$20; dated snapshots price as their alias). A model with no
+price shows as "unpriced" in the summary, with a warning, never as $0. Long real transcripts
+run well above 10k input tokens, so check a pilot's `usage` before trusting the estimate.
 
 ## Safety
 
@@ -77,7 +85,9 @@ the estimate.
 - The API key comes from `ANTHROPIC_API_KEY`, or else from Debrief's `secrets.json`. It is
   never printed.
 - **Harness gate.** The runner hashes `Sources/DebriefEval/*.swift` together with
-  `_state.json.harness_paths`, which covers the client, the service and the store. If the
+  `EvalFiles.harnessPaths` (the client, the service and the store) plus any extra paths you
+  add to `_state.json.harness_paths`. The other `_state.json` fields (reps, metrics, prices)
+  are refreshed on every run. If the
   hash doesn't match the one you approved, it exits 2 until you re-run with
   `--approve-harness`. The gate detects changes; it is not a security boundary.
 - `results.jsonl` stores each prompt in full, so for `fixtures/local` cases it contains real

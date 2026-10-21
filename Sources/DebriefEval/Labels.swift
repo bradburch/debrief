@@ -24,12 +24,10 @@ enum Labels {
         }
         var picked: [(row: ResultRow, variant: String, debrief: String)] = []
         for v in Summary.variants(out) {
-            let vdir = out.appendingPathComponent(v)
-            for row in EvalFiles.rows(vdir).sorted(by: { $0.prompt_id < $1.prompt_id })
+            // The debrief exactly as the judge graded it, so human and judge label the same text.
+            for row in EvalFiles.rows(out.appendingPathComponent(v)).sorted(by: { $0.prompt_id < $1.prompt_id })
             where row.grade["grounded"] != nil {
-                guard let data = try? Data(contentsOf: vdir.appendingPathComponent("traces/\(row.prompt_id)_rep\(row.rep).json")),
-                      let trace = try? JSONDecoder().decode([Turn].self, from: data),
-                      let debrief = trace.last?.content else { continue }
+                guard let debrief = row.meta.debrief_json else { continue }
                 picked.append((row, v, debrief))
             }
         }

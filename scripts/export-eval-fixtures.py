@@ -4,12 +4,13 @@
 Writes only to eval/fixtures/local/ (gitignored). Prints only counts/ids/stats.
 Anonymization is heuristic: review eval/fixtures/local/REVIEW.md before use.
 """
-import argparse, json, os, random, re, sqlite3, sys
+import argparse, hashlib, json, os, random, re, sqlite3, sys
 from collections import Counter, defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "eval", "fixtures", "local")
 DEFAULT_DB = "~/Library/Application Support/Debrief/db/debrief.sqlite"
+DEFAULT_PROMPTS = "~/Library/Application Support/Debrief/prompts"
 
 ALLOW = set("""i i'm i'll i've i'd ok okay aws gcp api apis sql nosql python java javascript typescript
 kubernetes docker linux unix ios android swift react node nodejs golang rust ruby rails django flask
@@ -108,6 +109,29 @@ class Anonymizer:
             return "[NAME]"
         return CAP.sub(tok, text)
 
+def parse_transcript_only(markdown):
+    """Mirror of PromptStore.parseTranscriptOnly: only the lines before the first heading count."""
+    key = "transcript-only:"
+    for line in markdown.split("\n"):
+        t = line.strip(" \t")
+        if t.startswith("#"):
+            return False
+        if not t.lower().startswith(key):
+            continue
+        return t[len(key):].strip(" \t").lower() == "true"
+    return False
+
+def transcript_only_types(prompts_dir):
+    """Round types whose overlay opts out of scoring (base.md is not an overlay)."""
+    d = os.path.expanduser(prompts_dir)
+    out = set()
+    for fn in os.listdir(d):
+        if fn.endswith(".md") and fn != "base.md":
+            with open(os.path.join(d, fn), encoding="utf-8") as f:
+                if parse_transcript_only(f.read()):
+                    out.add(fn[:-3])
+    return out
+
 def count_company(anon, text):
     return len(re.findall(r"Company [A-Z]+\b", text))
 
@@ -128,6 +152,11 @@ def self_test():
     t = a.run("The offer was $180k base, 15% bonus, on March 3rd.")
     assert "$180k" in t and "15%" in t and "March 3rd" in t, t
     assert "(indistinct" not in a.run("we sat in silence")
+    assert parse_transcript_only("transcript-only: true\n\n# Mock\n")
+    assert parse_transcript_only("  Transcript-Only:  TRUE  \n# x")
+    assert not parse_transcript_only("transcript-only: false\n# x")
+    assert not parse_transcript_only("# Mock\ntranscript-only: true\n"), "prose after a heading never opts out"
+    assert not parse_transcript_only("transcript-only: yes\n")
     print("self-test OK")
 
 def main():
@@ -136,7 +165,9 @@ def main():
     ap.add_argument("--n", type=int, default=30)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--prompts-dir", default=DEFAULT_PROMPTS)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--dry-run", action="store_true", help="print selection counts; write nothing")
     args = ap.parse_args()
     if args.self_test:
         self_test(); return
@@ -149,8 +180,11 @@ def main():
     alias = {i: alias_for(k) for k, (i, _, _) in enumerate(companies)}
     anon = Anonymizer([n for _, n, _ in companies])
 
-    sess = db.execute("SELECT id, companyId, roundType, date, durationSeconds, contextNotes FROM session "
-                      "WHERE roundType != 'mock_interview' ORDER BY date, id").fetchall()
+    # Transcript-only rounds (practice) are never coached, and aren't a real "later round"
+    # for the per-company advancement label either.
+    skip = transcript_only_types(args.prompts_dir)
+    sess = [s for s in db.execute("SELECT id, companyId, roundType, date, durationSeconds, contextNotes FROM session "
+                                  "ORDER BY date, id").fetchall() if s[2] not in skip]
     bycomp = defaultdict(list)
     for s in sess:
         bycomp[s[1]].append(s)
@@ -205,6 +239,14 @@ def main():
                     else:
                         break
             chosen += picked
+
+    if args.dry_run:
+        print("transcript-only round types:", sorted(skip))
+        print("would export", len(chosen), "of", len(cands), "candidate sessions")
+        print("per roundType:", dict(Counter(s[2] for s in chosen)))
+        print("labels:", dict(Counter(label[s[0]][1] for s in chosen)))
+        print("selection sha:", hashlib.sha256(json.dumps(sorted([s[0], label[s[0]]] for s in chosen)).encode()).hexdigest()[:12])
+        return
 
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, ".gitignore"), "w") as f:
