@@ -47,7 +47,7 @@ final class ClaudeClientTests: XCTestCase {
             XCTAssertEqual(request.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
             // Verify the request body carries model + structured output config.
             let body = try! JSONSerialization.jsonObject(with: request.bodyData()) as! [String: Any]
-            XCTAssertEqual(body["model"] as? String, "claude-opus-4-8")
+            XCTAssertEqual(body["model"] as? String, "claude-opus-5-5")
             XCTAssertNotNil((body["output_config"] as? [String: Any])?["format"])
             return (200, self.envelope(text: Self.goodPayload))
         }
@@ -131,7 +131,7 @@ final class ClaudeClientTests: XCTestCase {
             return captured
         }
         // Adaptive-capable 4.6+ models send adaptive thinking.
-        let opus = try await thinking(forModel: "claude-opus-4-8")
+        let opus = try await thinking(forModel: "claude-opus-5-5")
         let sonnet = try await thinking(forModel: "claude-sonnet-5")
         XCTAssertEqual(opus["type"] as? String, "adaptive")
         XCTAssertEqual(sonnet["type"] as? String, "adaptive")

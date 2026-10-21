@@ -72,7 +72,7 @@ public struct ResponseMeta: Sendable {
 public struct AnthropicClient: CoachingLLM {
     /// Single source of truth for the default model — also referenced by the app's
     /// model setting so the picker default and the client default can't drift apart.
-    public static let defaultModel = "claude-opus-4-8"
+    public static let defaultModel = "claude-opus-5-5"
 
     let apiKey: String
     let model: String

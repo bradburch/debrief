@@ -15,8 +15,10 @@ struct SettingsView: View {
     @AppStorage("coachingProvider") private var provider = "anthropic"
     @AppStorage("openAICompatBaseURL") private var compatBaseURL = "http://localhost:11434/v1"
     @AppStorage("openAICompatModel") private var compatModel = ""
+    @AppStorage("geminiModel") private var geminiModel = ""
+    @State private var geminiKey = SecretStore.read(key: "gemini-api-key") ?? ""
     @AppStorage("claudeCLIPath") private var claudeCLIPath = ""
-    @AppStorage("claudeCLIModel") private var claudeCLIModel = "claude-opus-5"
+    @AppStorage("claudeCLIModel") private var claudeCLIModel = "claude-opus-5-5"
     @State private var compatKey = SecretStore.read(key: "openai-compat-api-key") ?? ""
     @AppStorage("exportDirectory") private var exportDir = ""
     @State private var relaunchPrompt: RelaunchPrompt?
@@ -30,10 +32,10 @@ struct SettingsView: View {
     private struct RelaunchPrompt: Identifiable { let id = UUID(); let dir: String }
 
     private let modelOptions: [(label: String, id: String)] = [
-        ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),
+        ("Opus 5.5 — best quality (default)", "claude-opus-5-5"),
+        ("Fable 5.1 — most capable, priciest", "claude-fable-5-1"),
         ("Sonnet 5.5 — balanced", "claude-sonnet-5-5"),
-        ("Sonnet 5", "claude-sonnet-5"),
-        ("Haiku 4.5 — fastest, cheapest", "claude-haiku-4-5-20251001"),
+        ("Haiku 5.5 — fastest, cheapest", "claude-haiku-5-5"),
     ]
 
     private var envAPIKeyPresent: Bool {
@@ -60,6 +62,7 @@ struct SettingsView: View {
                 Picker("Provider", selection: $provider) {
                     Text("Claude API (recommended)").tag("anthropic")
                     Text("Claude subscription (Claude Code CLI)").tag("claude_cli")
+                    Text("Google Gemini").tag("gemini")
                     Text("Local / OpenAI-compatible").tag("openai_compat")
                 }
                 .onChange(of: provider) { env.rebuildCoaching() }
@@ -98,6 +101,30 @@ struct SettingsView: View {
                         ForEach(modelOptions, id: \.id) { Text($0.label).tag($0.id) }
                     }
                     .onChange(of: model) { env.rebuildCoaching() }
+                } else if provider == "gemini" {
+                    // ponytail: model is free text — Gemini ids churn; copy one from ai.google.dev/gemini-api/docs/models.
+                    TextField("Model", text: $geminiModel, prompt: Text("e.g. gemini-3.1-pro-preview"))
+                        .onChange(of: geminiModel) { env.rebuildCoaching() }
+                    LabeledContent("API key") {
+                        HStack(spacing: Spacing.s) {
+                            SecureField("API key", text: $geminiKey, prompt: Text("Google AI Studio key"))
+                                .labelsHidden()
+                            Button("Save key") {
+                                do {
+                                    if geminiKey.isEmpty {
+                                        try SecretStore.delete(key: "gemini-api-key")
+                                    } else {
+                                        try SecretStore.save(key: "gemini-api-key", value: geminiKey)
+                                    }
+                                    env.rebuildCoaching()
+                                    saved = true; saveError = nil
+                                } catch {
+                                    saveError = "Could not save key: \(error.localizedDescription)"; saved = false
+                                }
+                            }
+                        }
+                    }
+                    saveStatus
                 } else {
                     TextField("Base URL", text: $compatBaseURL, prompt: Text("http://localhost:11434/v1"))
                         .onChange(of: compatBaseURL) { env.rebuildCoaching() }
@@ -403,7 +430,7 @@ struct SettingsView: View {
         TextField("CLI path", text: $claudeCLIPath,
                   prompt: Text("~/.local/bin/claude"))
             .onChange(of: claudeCLIPath) { env.rebuildCoaching() }
-        TextField("Model", text: $claudeCLIModel, prompt: Text("claude-opus-5"))
+        TextField("Model", text: $claudeCLIModel, prompt: Text("claude-opus-5-5"))
             .onChange(of: claudeCLIModel) { env.rebuildCoaching() }
     }
 
@@ -416,6 +443,9 @@ struct SettingsView: View {
             return "Bills your Claude subscription instead of an API key; needs the CLI installed and signed in. "
                 + "Each debrief carries ~15–20k extra tokens, rate limits can throttle re-runs, there's no JSON "
                 + "schema, and a CLI update could break it — this isn't a supported integration."
+        case "gemini":
+            return "Uses Gemini's OpenAI-compatible endpoint, so there's no enforced JSON schema — "
+                + "coaching quality depends on the model you pick."
         case "anthropic":
             return "The model applies to the next debrief you generate."
         default:

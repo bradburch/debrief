@@ -148,7 +148,7 @@ to *Debrief* instead of your terminal.
   `overallScore` is a secondary trend line, comparable within a round type but
   not across (different round types score different dimensions).
 - **Choose your coaching model.** Settings → Coaching model lets you pick
-  Claude Opus (best quality, default), Sonnet (balanced), or Haiku (fastest,
+  Claude Opus 5.5 (best quality, default), Fable 5.1 (most capable), Sonnet 5.5 (balanced), or Haiku 5.5 (fastest,
   cheapest) — or switch provider entirely: your **Claude subscription** via the
   Claude Code CLI (no API key; costs more tokens per debrief and can hit
   subscription rate limits), or a **local/OpenAI-compatible server** for fully
