@@ -79,7 +79,9 @@ final class CoachingIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let store = PromptStore(directory: dir)
         try store.ensureDefaults()
-        return try await AnthropicClient(apiKey: key).generateCoaching(
+        // DEBRIEF_MODEL lets one run check a specific model's acceptance of the request shape.
+        let model = ProcessInfo.processInfo.environment["DEBRIEF_MODEL"] ?? AnthropicClient.defaultModel
+        return try await AnthropicClient(apiKey: key, model: model).generateCoaching(
             systemPrompt: try store.assembleSystemPrompt(roundType: round, historyTags: []),
             userMessage: "Round type: \(round.displayName)\n\nTranscript:\n\(transcript)",
             dimensions: try store.dimensions(for: round))

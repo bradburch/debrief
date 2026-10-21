@@ -22,10 +22,14 @@ let package = Package(
             name: "DebriefApp",
             dependencies: ["Store", "Transcriber", "CoachingEngine", "CaptureKit"]
         ),
+        // Model/prompt eval harness for the coaching call — see eval/README.md. Never touches
+        // the app's database: every case runs against a fresh in-memory AppDatabase.
+        .executableTarget(name: "DebriefEval", dependencies: ["Store", "CoachingEngine"]),
         .testTarget(name: "StoreTests", dependencies: ["Store"]),
         .testTarget(name: "TranscriberTests", dependencies: ["Transcriber"]),
         .testTarget(name: "CoachingEngineTests", dependencies: ["CoachingEngine", "Store"]),
         .testTarget(name: "CaptureKitTests", dependencies: ["CaptureKit"]),
         .testTarget(name: "DebriefAppTests", dependencies: ["DebriefApp"]),
+        .testTarget(name: "DebriefEvalTests", dependencies: ["DebriefEval", "CoachingEngine", "Store"]),
     ]
 )

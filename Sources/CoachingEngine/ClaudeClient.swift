@@ -37,6 +37,38 @@ public enum ClaudeError: Error, Equatable {
     case chatUnsupported
 }
 
+/// What one successful (HTTP 200) Messages API call reported, for callers that measure the
+/// call itself — the eval harness (`DebriefEval`). The app never sets `onResponse`.
+public struct ResponseMeta: Sendable {
+    public struct Usage: Codable, Sendable, Equatable {
+        public var inputTokens: Int
+        public var outputTokens: Int
+        public var cacheReadInputTokens: Int?
+        public var cacheCreationInputTokens: Int?
+        public init(inputTokens: Int, outputTokens: Int,
+                    cacheReadInputTokens: Int? = nil, cacheCreationInputTokens: Int? = nil) {
+            self.inputTokens = inputTokens; self.outputTokens = outputTokens
+            self.cacheReadInputTokens = cacheReadInputTokens
+            self.cacheCreationInputTokens = cacheCreationInputTokens
+        }
+        enum CodingKeys: String, CodingKey {
+            case inputTokens = "input_tokens", outputTokens = "output_tokens"
+            case cacheReadInputTokens = "cache_read_input_tokens"
+            case cacheCreationInputTokens = "cache_creation_input_tokens"
+        }
+    }
+    /// The model that served the request, from the response — not the one asked for.
+    public let model: String
+    public let usage: Usage
+    public let stopReason: String?
+    /// Concatenated `thinking` blocks; often empty (5.x models omit thinking text by default).
+    public let thinking: String
+    /// First non-empty text block, nil when there was none.
+    public let text: String?
+    /// Wall-clock of the single URLSession call that produced this response.
+    public let latency: TimeInterval
+}
+
 public struct AnthropicClient: CoachingLLM {
     /// Single source of truth for the default model — also referenced by the app's
     /// model setting so the picker default and the client default can't drift apart.
@@ -45,11 +77,14 @@ public struct AnthropicClient: CoachingLLM {
     let apiKey: String
     let model: String
     let session: URLSession
+    let onResponse: (@Sendable (ResponseMeta) -> Void)?
 
-    public init(apiKey: String, model: String = AnthropicClient.defaultModel, session: URLSession = .shared) {
+    public init(apiKey: String, model: String = AnthropicClient.defaultModel, session: URLSession = .shared,
+                onResponse: (@Sendable (ResponseMeta) -> Void)? = nil) {
         self.apiKey = apiKey
         self.model = model
         self.session = session
+        self.onResponse = onResponse
     }
 
     /// Adaptive thinking is a Claude 4.6+ feature; pre-4.6 models (e.g. Haiku 4.5)
@@ -67,7 +102,8 @@ public struct AnthropicClient: CoachingLLM {
     /// valid JSON object decodable as CoachingResult. Built per call because the scored
     /// dimensions differ by round type — `additionalProperties: false` plus an exhaustive
     /// `required` is what forces the model to score this round's dimensions and no others.
-    static func outputSchema(dimensions: [String]) -> [String: Any] {
+    /// Public so the eval harness can hash the exact contract a run was graded against.
+    public static func outputSchema(dimensions: [String]) -> [String: Any] {
         var scoreProps: [String: Any] = [:]
         for key in dimensions {
             // No minimum/maximum: the API rejects range keywords on integer types with a 400
@@ -158,26 +194,37 @@ public struct AnthropicClient: CoachingLLM {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        let started = Date()
         let (data, response) = try await session.data(for: request)
+        let latency = Date().timeIntervalSince(started)
         let http = response as! HTTPURLResponse
         guard http.statusCode == 200 else {
             throw ClaudeError.httpStatus(http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
         }
 
         struct Envelope: Decodable {
-            struct Block: Decodable { let type: String; let text: String? }
+            struct Block: Decodable { let type: String; let text: String?; let thinking: String? }
             let content: [Block]
             let stop_reason: String?
+            let model: String?
+            let usage: ResponseMeta.Usage?
         }
         let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+        let text = envelope.content.first(where: { $0.type == "text" && $0.text?.isEmpty == false })?.text
+        // Before the refusal/truncation throws, so a clipped or refused call still reports
+        // what it billed.
+        onResponse?(ResponseMeta(
+            model: envelope.model ?? "",
+            usage: envelope.usage ?? .init(inputTokens: 0, outputTokens: 0),
+            stopReason: envelope.stop_reason,
+            thinking: envelope.content.compactMap { $0.type == "thinking" ? $0.thinking : nil }.joined(separator: "\n\n"),
+            text: text, latency: latency))
         switch envelope.stop_reason {
         case "refusal": throw ClaudeError.refusal
         case "max_tokens": throw ClaudeError.truncated
         default: break
         }
-        guard let text = envelope.content.first(where: { $0.type == "text" && $0.text?.isEmpty == false })?.text else {
-            throw ClaudeError.emptyResponse
-        }
+        guard let text else { throw ClaudeError.emptyResponse }
         return text
     }
 }

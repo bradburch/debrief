@@ -1,0 +1,79 @@
+{
+  "id": "syn-recruiter-process",
+  "source": "synthetic",
+  "roundType": "recruiter_screen",
+  "company": "Acme Robotics",
+  "durationSeconds": 180,
+  "contextNotes": "",
+  "segments": [
+    {
+      "speaker": "THEM",
+      "tStart": 5,
+      "text": "Thanks for making time. I'm a recruiter here at Acme."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 20,
+      "text": "Happy to be here. I've been a backend engineer for six years, most recently at Globex where I owned the billing platform."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 50,
+      "text": "Great. Let me walk you through what's next. There are three more rounds after this one: a coding screen next week, then a system design round, and finally a panel with the VP of Engineering, Dana Liu."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 80,
+      "text": "The coding screen is 60 minutes in CoderPad, Python or Go."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 95,
+      "text": "Got it. When would the coding screen be scheduled?"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 102,
+      "text": "I'll send times for Tuesday or Wednesday. We want to close the loop by end of month, and I'll get back to you with feedback within two business days of each round."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 130,
+      "text": "One thing I need from you — send me your GitHub link by Friday, the hiring manager wants to look at it before the coding screen."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 150,
+      "text": "Will do. What's the comp band for the role?"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 155,
+      "text": "It's 180 to 210 base, plus equity."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 170,
+      "text": "That works for me."
+    }
+  ],
+  "expected": {
+    "advances": null,
+    "outcomeSource": "none"
+  },
+  "checks": {
+    "processNotesMention": [
+      [
+        "friday"
+      ],
+      [
+        "panel",
+        "dana"
+      ],
+      [
+        "three",
+        "3"
+      ]
+    ]
+  }
+}

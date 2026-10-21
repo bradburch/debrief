@@ -135,6 +135,9 @@ final class ClaudeClientTests: XCTestCase {
         let sonnet = try await thinking(forModel: "claude-sonnet-5")
         XCTAssertEqual(opus["type"] as? String, "adaptive")
         XCTAssertEqual(sonnet["type"] as? String, "adaptive")
+        // Sonnet 5.5 400s on "disabled" and on budget_tokens; adaptive is its only on-mode.
+        let sonnet55 = try await thinking(forModel: "claude-sonnet-5-5")
+        XCTAssertEqual(sonnet55["type"] as? String, "adaptive")
         // Haiku 4.5 rejects adaptive (400); it must get enabled + a budget under max_tokens.
         let haiku = try await thinking(forModel: "claude-haiku-4-5-20251001")
         XCTAssertEqual(haiku["type"] as? String, "enabled")
@@ -160,3 +163,37 @@ extension URLRequest {
         return data
     }
 }
+
+final class ClaudeClientResponseMetaTests: XCTestCase {
+    /// The eval harness prices rows from this callback, so usage and the SERVED model must
+    /// arrive — including on a truncated call, which still bills.
+    func testOnResponseReportsUsageAndModelEvenWhenTruncated() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let box = MetaBox()
+        let client = AnthropicClient(apiKey: "k", model: "claude-sonnet-5-5",
+                                     session: URLSession(configuration: config),
+                                     onResponse: { box.meta = $0 })
+        MockURLProtocol.handler = { _ in
+            let obj: [String: Any] = [
+                "model": "claude-sonnet-5-5-20261001", "stop_reason": "max_tokens",
+                "content": [["type": "thinking", "thinking": "hmm"], ["type": "text", "text": "{"]],
+                "usage": ["input_tokens": 1200, "output_tokens": 480, "cache_read_input_tokens": 7],
+            ]
+            return (200, try! JSONSerialization.data(withJSONObject: obj))
+        }
+        do {
+            _ = try await client.generateCoaching(systemPrompt: "s", userMessage: "u",
+                                                  dimensions: ClaudeClientTests.dims)
+            XCTFail("expected truncated")
+        } catch let e as ClaudeError { XCTAssertEqual(e, .truncated) }
+        let meta = try XCTUnwrap(box.meta)
+        XCTAssertEqual(meta.model, "claude-sonnet-5-5-20261001")
+        XCTAssertEqual(meta.usage, .init(inputTokens: 1200, outputTokens: 480, cacheReadInputTokens: 7))
+        XCTAssertEqual(meta.stopReason, "max_tokens")
+        XCTAssertEqual(meta.thinking, "hmm")
+        XCTAssertEqual(meta.text, "{")
+    }
+}
+
+private final class MetaBox: @unchecked Sendable { var meta: ResponseMeta? }

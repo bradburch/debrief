@@ -1,0 +1,32 @@
+{
+  "id": "syn-behavioral-near-empty",
+  "source": "synthetic",
+  "roundType": "behavioral",
+  "company": "Brightwater Health",
+  "durationSeconds": 95,
+  "contextNotes": "",
+  "segments": [
+    {
+      "speaker": "THEM",
+      "tStart": 3,
+      "text": "Hi, can you hear me okay?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 7,
+      "text": "Yes, hi. Sorry, my connection is"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 90,
+      "text": "Let's reschedule, I'll send a new invite."
+    }
+  ],
+  "expected": {
+    "advances": null,
+    "outcomeSource": "none"
+  },
+  "checks": {
+    "maxMeanScore": 3.0
+  }
+}
