@@ -31,7 +31,8 @@ struct SettingsView: View {
 
     private let modelOptions: [(label: String, id: String)] = [
         ("Opus 4.8 — best quality (default)", "claude-opus-4-8"),
-        ("Sonnet 5 — balanced", "claude-sonnet-5"),
+        ("Sonnet 5.5 — balanced", "claude-sonnet-5-5"),
+        ("Sonnet 5", "claude-sonnet-5"),
         ("Haiku 4.5 — fastest, cheapest", "claude-haiku-4-5-20251001"),
     ]
 

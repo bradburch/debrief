@@ -41,14 +41,15 @@ struct DebriefApp: App {
         return env.callDetected ? "phone.circle.fill" : "waveform.circle"
     }
 
-    /// A word beside the glyph for the two states you act on. The symbol swap alone
-    /// (waveform → phone) was too subtle to notice in a crowded menu bar.
+    /// A word beside the glyph when a call is detected. The symbol swap alone
+    /// (waveform → phone) was too subtle to notice in a crowded menu bar. Recording gets no
+    /// caption — the red record glyph is enough.
     private var menuBarCaption: String? {
         // Static text only. A self-updating `Text(_, style: .timer)` here pinned the main
         // thread at 100%: MenuBarExtra re-rasterizes the status item on every tick and the
         // re-render schedules the next one, so the app froze the moment recording began.
         // The live timer is in the popover and the window toolbar.
-        if case .recording = env.coordinator.recordingPhase { return "Rec" }
+        if case .recording = env.coordinator.recordingPhase { return nil }
         return env.callDetected ? "Call" : nil
     }
 }
