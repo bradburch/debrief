@@ -469,7 +469,13 @@ final class AppEnvironment: ObservableObject {
             return ClaudeCodeCLIClient(executable: cli,
                                        model: d.string(forKey: "claudeCLIModel").flatMap {
                                            $0.isEmpty ? nil : $0
-                                       } ?? "claude-opus-5")
+                                       } ?? "claude-opus-5-5")
+        }
+        if d.string(forKey: "coachingProvider") == "gemini" {
+            return OpenAICompatibleClient(
+                baseURL: URL(string: "https://generativelanguage.googleapis.com/v1beta/openai")!,
+                model: d.string(forKey: "geminiModel") ?? "",
+                apiKey: SecretStore.read(key: "gemini-api-key") ?? "")
         }
         guard d.string(forKey: "coachingProvider") == "openai_compat" else {
             return AnthropicClient(apiKey: resolveAPIKey(), model: resolveModel())

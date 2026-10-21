@@ -5,3 +5,13 @@ DerivedData/
 Debrief.app/
 .DS_Store
 docs/index.md
+# Eval harness (eval/README.md): real transcripts and per-run artifacts stay local.
+eval/fixtures/local/
+eval/labels/
+.claude/hillclimb/**/traces/
+.claude/hillclimb/**/judge/
+.claude/hillclimb/**/report.html
+.claude/hillclimb/**/trajectory/
+.claude/hillclimb/**/results.jsonl
+.claude/hillclimb/**/errors.jsonl
+.claude/hillclimb/**/summary.md

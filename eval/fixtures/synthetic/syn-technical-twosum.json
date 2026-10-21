@@ -1,0 +1,133 @@
+{
+  "id": "syn-technical-twosum",
+  "source": "synthetic",
+  "roundType": "technical",
+  "company": "Northwind Labs",
+  "durationSeconds": 330,
+  "contextNotes": "",
+  "segments": [
+    {
+      "speaker": "THEM",
+      "tStart": 5,
+      "text": "Given an array of integers, find two numbers that add up to a target."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 12,
+      "text": "Sure. Let me make sure I understand — the array is unsorted, and I should return the indices of the two numbers. Can there be duplicates, and is exactly one solution guaranteed?"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 28,
+      "text": "Unsorted, return indices, assume exactly one solution."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 35,
+      "text": "Got it. Let me think out loud. The straightforward approach is to check every pair — for each element, scan the rest of the array for its complement. Let me start there and we can refine."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 70,
+      "text": "def two_sum(nums, target):"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 75,
+      "text": "for i in range(len(nums)):"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 80,
+      "text": "for j in range(i+1, len(nums)):"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 85,
+      "text": "if nums[i] + nums[j] == target: return [i, j]"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 100,
+      "text": "That's correct — it checks every pair exactly once and returns the indices. Let me trace it on [2,7,11,15] with target 9: i=0, j=1, 2+7=9, returns [0,1]. Correct."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 140,
+      "text": "Good. Can you do better than that?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 145,
+      "text": "Hmm. Let me think about that for a moment."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 170,
+      "text": "I could sort the array first and use two pointers from each end. That would be faster than checking every pair."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 185,
+      "text": "What happens to the indices if you sort?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 192,
+      "text": "Right, good point, sorting loses the original positions. I'd need to keep track of them somehow. Maybe store pairs of value and index before sorting."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 220,
+      "text": "Is there a way to do it in one pass?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 228,
+      "text": "One pass... I'm not immediately seeing it. Could you give me a nudge?"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 235,
+      "text": "Think about what you'd want to look up as you walk the array."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 250,
+      "text": "Oh — a hash map. As I go, I store each number I've seen, and check whether the complement is already in the map. That would be one pass."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 270,
+      "text": "What's the complexity of that?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 275,
+      "text": "The hash map one would be faster than the nested loops, since I'm not rescanning. I'd have to think about the exact big-O."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 290,
+      "text": "I'd probably go with the hash map version in production. Should I code it up?"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 300,
+      "text": "We're about out of time. Any questions for me?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 305,
+      "text": "Yes — how does the team balance shipping speed against code review depth? And what does the first 90 days look like for someone in this role?"
+    }
+  ],
+  "expected": {
+    "advances": false,
+    "outcomeSource": "hand"
+  },
+  "checks": {
+    "advancesFalse": true,
+    "correctnessBelowConciseness": true
+  }
+}

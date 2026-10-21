@@ -25,7 +25,7 @@ public struct ClaudeCodeCLIClient: CoachingLLM {
     let timeout: TimeInterval
     private static let logger = Logger(subsystem: "com.debrief.app", category: "coaching")
 
-    public init(executable: URL, model: String = "claude-opus-5", timeout: TimeInterval = 600) {
+    public init(executable: URL, model: String = "claude-opus-5-5", timeout: TimeInterval = 600) {
         self.executable = executable
         self.model = model
         self.timeout = timeout

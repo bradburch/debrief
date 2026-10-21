@@ -1,0 +1,92 @@
+{
+  "id": "syn-recruiter-weak",
+  "source": "synthetic",
+  "roundType": "recruiter_screen",
+  "company": "Quillmark Software",
+  "durationSeconds": 1500,
+  "contextNotes": "",
+  "segments": [
+    {
+      "speaker": "THEM",
+      "tStart": 5,
+      "text": "Hi, this is Jenna from Quillmark recruiting. Thanks for taking the call. Can you start by telling me a bit about yourself?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 15,
+      "text": "Sure, so, where to start. I went to school in Ohio, I studied, well, I started in biology actually and then switched, and then I had an internship, and after that I did a few things, some contracting, then I was at a startup that didn't really work out, and then a bigger company, and I've done some frontend and some backend and some data stuff, and right now I'm kind of figuring out what's next."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 160,
+      "text": "Okay. What draws you to Quillmark?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 165,
+      "text": "Honestly I saw the posting and it looked like a fit. I haven't had a chance to look into the company much. What do you guys do exactly?"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 185,
+      "text": "We build document automation for legal teams."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 190,
+      "text": "Oh cool, yeah, I could do that."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 260,
+      "text": "What are your salary expectations?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 264,
+      "text": "I don't know, whatever's normal. I'd take anything reasonable honestly, even like 90 would be fine."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 280,
+      "text": "The posted range is 150 to 175."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 284,
+      "text": "Oh. Okay, yeah, that's fine too."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 330,
+      "text": "Tell me about a recent project."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 334,
+      "text": "There was a migration thing at my last job, it went on for a while, there were a lot of meetings, I worked on parts of it, it was kind of messy, people left, then it got reorganized, and I think it eventually finished after I left, I'm not sure."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 490,
+      "text": "Do you have any questions for me?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 494,
+      "text": "No, I think I'm good."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 500,
+      "text": "Alright. I'll share notes with the hiring manager and get back to you."
+    }
+  ],
+  "expected": {
+    "advances": false,
+    "outcomeSource": "hand"
+  },
+  "checks": {
+    "advancesFalse": true
+  }
+}

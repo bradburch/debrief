@@ -1,0 +1,99 @@
+{
+  "id": "syn-behavioral-strong",
+  "source": "synthetic",
+  "roundType": "behavioral",
+  "company": "Larkspur Payments",
+  "durationSeconds": 2100,
+  "contextNotes": "Senior backend engineer role, payments platform.",
+  "segments": [
+    {
+      "speaker": "THEM",
+      "tStart": 6,
+      "text": "Thanks for coming in. I'm Marcus, engineering manager for the ledger team. Let's start with a time you led a technically risky project."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 20,
+      "text": "Sure. Last year at Tessellate I led the migration of our payment ledger from a single Postgres instance to a sharded setup. The situation: we were at 85% CPU at peak and Black Friday was eleven weeks out, and our forecast said we'd hit the ceiling at roughly 1.4 times normal load."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 58,
+      "text": "My task was to own the plan end to end — I wasn't the manager, but I was the tech lead and the one on the hook for the cutover. What I did first was write a one-page risk doc that listed the three ways this could lose money: double writes, lost writes, and reconciliation drift. I got sign-off from finance on how much drift we could tolerate, which was zero cents, so that drove everything."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 105,
+      "text": "I built a dual-write shadow mode myself, ran it for three weeks, and wrote a nightly reconciler that compared every ledger entry between old and new. It caught two bugs in our idempotency keys before any customer saw them. Then I ran the cutover in four tranches by merchant size, smallest first."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 150,
+      "text": "The result: we cut over with zero reconciliation differences, peak CPU dropped from 85 to 31 percent, and Black Friday ran at 2.3 times normal load with p99 write latency going from 180 milliseconds to 45."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 178,
+      "text": "What would you do differently?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 182,
+      "text": "I'd have involved the on-call rotation earlier. I wrote the runbook alone and the first tranche was at 2 a.m. with someone who'd never read it. Nothing broke, but if it had, we'd have been slow. Since then I do a dry-run game day with whoever's on call before any migration."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 220,
+      "text": "Tell me about a disagreement with a senior colleague."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 225,
+      "text": "Our principal engineer wanted to build our own consensus layer for the sharding metadata. I thought that was too much risk for the timeline. Rather than argue in the meeting, I wrote up both options with a failure-mode table and asked him to poke holes in mine. He found one real gap — failover time — and I changed my design to address it. We went with the managed option plus his failover check, and he co-presented it at the architecture review. The decision took three days instead of the three weeks these debates usually took."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 310,
+      "text": "How do you handle a project that's slipping?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 315,
+      "text": "Concrete example: the reconciler was two weeks late because the old schema had no stable entry IDs. I told my manager the day I knew, with two options: cut scope to only card payments for the first tranche, or slip the date. We cut scope, shipped cards on time, and added bank transfers in tranche three."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 380,
+      "text": "Tell me about mentoring someone."
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 384,
+      "text": "I mentored a new-grad, Aisha, through owning the reconciler alerts. I paired with her for the first week, then had her lead the alert review each Friday. By the end of the quarter she was primary on-call for the ledger, and she got promoted the following cycle."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 1720,
+      "text": "We're near time. What questions do you have for me?"
+    },
+    {
+      "speaker": "YOU",
+      "tStart": 1725,
+      "text": "Two. What's the biggest reliability risk on the ledger team's roadmap right now? And how do you decide when an engineer is ready to lead a cross-team migration like this?"
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 1750,
+      "text": "Great questions. The biggest risk is our multi-currency rollout..."
+    },
+    {
+      "speaker": "THEM",
+      "tStart": 2030,
+      "text": "Thanks, this was great. You'll hear from the recruiter this week."
+    }
+  ],
+  "expected": {
+    "advances": true,
+    "outcomeSource": "hand"
+  }
+}
