@@ -99,6 +99,15 @@ public struct AnthropicClient: CoachingLLM {
             : ["type": "adaptive"]
     }
 
+    /// Opus 5.5 and Haiku 5.5 default to effort `medium` (Opus 4.8 was `high`), so pin it or
+    /// the "best quality" default silently coaches shallower. Haiku 4.5 rejects `effort`.
+    func outputConfig(dimensions: [String]) -> [String: Any] {
+        var config: [String: Any] = ["format": ["type": "json_schema",
+                                                "schema": Self.outputSchema(dimensions: dimensions)]]
+        if !model.hasPrefix("claude-haiku-4") { config["effort"] = "high" }
+        return config
+    }
+
     /// JSON schema for structured outputs: guarantees the response text is a single
     /// valid JSON object decodable as CoachingResult. Built per call because the scored
     /// dimensions differ by round type — `additionalProperties: false` plus an exhaustive
@@ -169,8 +178,7 @@ public struct AnthropicClient: CoachingLLM {
             "thinking": thinkingParam,
             "system": systemPrompt,
             "messages": [["role": "user", "content": userMessage]],
-            "output_config": ["format": ["type": "json_schema",
-                                         "schema": Self.outputSchema(dimensions: dimensions)]],
+            "output_config": outputConfig(dimensions: dimensions),
         ])
         return try JSONDecoder().decode(CoachingResult.self, from: Data(text.utf8))
     }
