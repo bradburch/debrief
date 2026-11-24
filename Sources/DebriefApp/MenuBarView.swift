@@ -14,6 +14,7 @@ struct MenuBarView: View {
     /// collapsed the whole body to nothing, leaving only Open Debrief/Quit on screen (shipped
     /// in #25; every popover "fix" after it was invisible). Pin an explicit height instead.
     @State private var contentHeight: CGFloat = 0
+    @State private var popoverWindow: NSWindow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -77,10 +78,14 @@ struct MenuBarView: View {
             .padding(.vertical, Spacing.s)
         }
         .frame(width: 300)
-        // One task owns the meters for exactly as long as the popover is on screen: it
-        // re-arms them each tick and releases the devices when SwiftUI cancels it, which
-        // ties the mic and the system tap to "something is visibly showing them" rather
-        // than to `onDisappear` firing on a MenuBarExtra window.
+        .background(WindowReader { popoverWindow = $0 })
+        // One task owns the meters for exactly as long as the popover is on screen, and
+        // "on screen" is read off the NSWindow, never off the view lifecycle. A
+        // MenuBarExtra window is ordered out when it closes, not torn down: the view never
+        // disappears, so neither `onDisappear` nor this task's cancellation ever fires.
+        // Trusting cancellation held the mic open for as long as the app ran — which pins
+        // Bluetooth headphones in hands-free mode long after the call. An unknown window
+        // counts as hidden: a dead meter is a bug you can see, an open mic is not.
         //
         // Deliberately a loop rather than `.task(id: recordingPhase)`. An id change cancels
         // the old task and starts the new one without ordering them, so the outgoing task's
@@ -92,7 +97,11 @@ struct MenuBarView: View {
                 // is what brings the meters back after a recording is stopped from inside
                 // this same popover: `startRecording` released the monitor, and nothing else
                 // would ever hand it back while the popover stayed open.
-                await env.coordinator.startMonitoring()
+                if popoverWindow?.isVisible == true {
+                    await env.coordinator.startMonitoring()
+                } else {
+                    await env.coordinator.stopMonitoring()
+                }
                 // ponytail: a 1s poll, not a subscription. The coordinator would have to
                 // know a popover exists to push this; if a second surface ever wants live
                 // meters, give the coordinator a subscriber count instead.
@@ -221,6 +230,29 @@ struct LevelRow: View {
                 .frame(width: 36, alignment: .leading)
             LevelMeter(level: level)  // RMS is small; LevelMeter scales it for visibility
                 .accessibilityLabel("\(label) level")
+        }
+    }
+}
+
+/// Hands back the NSWindow hosting a view. SwiftUI has no API for "is my window on screen",
+/// and a MenuBarExtra popover's view lifecycle does not track it (see the meter task above).
+private struct WindowReader: NSViewRepresentable {
+    let onChange: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView { Probe(onChange: onChange) }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class Probe: NSView {
+        let onChange: (NSWindow?) -> Void
+        init(onChange: @escaping (NSWindow?) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // Hopped: this fires mid-layout, where writing @State is a SwiftUI fault.
+            DispatchQueue.main.async { [weak self] in self?.onChange(self?.window) }
         }
     }
 }
