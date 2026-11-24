@@ -237,8 +237,8 @@ public final class RecordingCoordinator: ObservableObject {
         let startedAt = Date()
         recordingPhase = .recording(started: startedAt)
         // After the claim above, before the real recorders open: the monitor is holding the
-        // same input device and process tap, and the popover's `onDisappear` is not a
-        // reliable release point (pressing Record dismisses the popover, so the two race).
+        // same input device and process tap, and the popover's own release is a 1s poll of
+        // its window's visibility (pressing Record dismisses the popover, so the two race).
         // The claim is already taken, so `startMonitoring` cannot re-open them behind us.
         await stopMonitoring()
         // Held outside the `do` so the catch can stop whatever was already started. `.failed`
@@ -378,7 +378,10 @@ public final class RecordingCoordinator: ObservableObject {
         // it — and `startRecording` calls this, so the popover would sit there showing
         // "Levels unavailable" underneath a live recording timer and two moving meters, for
         // the whole interview, with nothing able to clear it.
-        monitorFailure = nil
+        // Guarded, not assigned blind: the popover's meter loop calls this every second
+        // while it is hidden, and a nil-to-nil write to a @Published still fires
+        // `objectWillChange` — which AppEnvironment forwards to every view in the app.
+        if monitorFailure != nil { monitorFailure = nil }
         monitorStartFailed = false
         guard let monitor else { return }
         // Cleared and invalidated before the awaits, so a `startMonitoring` racing this sees
